@@ -34,6 +34,7 @@ jobs:
       OPENCODE_BASIC_PASS: ${{ secrets.OPENCODE_BASIC_PASS }}
       OPENCODE_PORT: ${{ github.event.inputs.opencode_port }}
       PROXY_PORT: ${{ github.event.inputs.proxy_port }}
+      CADDY_VERSION: '2.8.4'
 
     steps:
       - name: Checkout full repository
@@ -68,14 +69,16 @@ jobs:
           npm install -g opencode-ai@latest || npm install -g opencode@latest
           opencode --version || true
 
-      - name: نصب Caddy
+      - name: نصب Caddy (دانلود مستقیم از GitHub Releases)
         run: |
-          sudo apt-get update -y
-          sudo apt-get install -y debian-keyring debian-archive-keyring apt-transport-https curl gnupg
-          curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-          curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | sudo tee /etc/apt/sources.list.d/caddy-stable.list >/dev/null
-          sudo apt-get update -y
-          sudo apt-get install -y caddy
+          set -euo pipefail
+          ARCH="amd64"
+          URL="https://github.com/caddyserver/caddy/releases/download/v${CADDY_VERSION}/caddy_${CADDY_VERSION}_linux_${ARCH}.tar.gz"
+          echo "⬇️ دانلود Caddy از: $URL"
+          curl -fsSL "$URL" -o /tmp/caddy.tar.gz
+          tar -xzf /tmp/caddy.tar.gz -C /tmp caddy
+          sudo install -m 0755 /tmp/caddy /usr/local/bin/caddy
+          rm -f /tmp/caddy /tmp/caddy.tar.gz
           caddy version
 
       - name: ساخت کانفیگ OpenCode
