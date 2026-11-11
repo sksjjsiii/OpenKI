@@ -1,0 +1,8 @@
+
+# === OpenCode runner artifacts (auto) ===
+*.log
+opencode-url.txt
+.opencode/
+opencode.json
+.env
+.env.*
