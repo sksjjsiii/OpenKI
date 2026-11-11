@@ -36,9 +36,6 @@ jobs:
       PROXY_PORT: ${{ github.event.inputs.proxy_port }}
 
     steps:
-      # ─────────────────────────────────────────────
-      # ۱) کلون کل مخزن
-      # ─────────────────────────────────────────────
       - name: Checkout full repository
         uses: actions/checkout@v4
         with:
@@ -51,31 +48,16 @@ jobs:
           git config user.name  "opencode-bot"
           git config user.email "opencode-bot@users.noreply.github.com"
 
-          # مسیر لاگ‌ها بیرون از workspace
           LOG_DIR="${RUNNER_TEMP:-/tmp}/opencode-logs"
           mkdir -p "$LOG_DIR"
-          echo "LOG_DIR=$LOG_DIR" >> $GITHUB_ENV
+          echo "LOG_DIR=$LOG_DIR" >> "$GITHUB_ENV"
 
-          # کانفیگ OpenCode بیرون از workspace
           CONFIG_ROOT="${RUNNER_TEMP:-/tmp}/opencode-config"
           mkdir -p "$CONFIG_ROOT/opencode"
-          echo "XDG_CONFIG_HOME=$CONFIG_ROOT" >> $GITHUB_ENV
+          echo "XDG_CONFIG_HOME=$CONFIG_ROOT" >> "$GITHUB_ENV"
 
-          # .gitignore محافظ لایه دوم
-          cat >> .gitignore <<'EOF'
+          printf '\n# === OpenCode runner artifacts (auto) ===\n*.log\nopencode-url.txt\n.opencode/\nopencode.json\n.env\n.env.*\n' >> .gitignore
 
-# === OpenCode runner artifacts (auto) ===
-*.log
-opencode-url.txt
-.opencode/
-opencode.json
-.env
-.env.*
-EOF
-
-      # ─────────────────────────────────────────────
-      # ۲) نصب ابزارها
-      # ─────────────────────────────────────────────
       - name: نصب Node.js
         uses: actions/setup-node@v4
         with:
@@ -96,26 +78,25 @@ EOF
           sudo apt-get install -y caddy
           caddy version
 
-      # ─────────────────────────────────────────────
-      # ۳) کانفیگ OpenCode با provider خودکار (خارج از workspace)
-      # ─────────────────────────────────────────────
       - name: ساخت کانفیگ OpenCode
         run: |
           set -euo pipefail
           CONFIG_FILE="$XDG_CONFIG_HOME/opencode/opencode.json"
 
           PASS_HASH=$(caddy hash-password --plaintext "$OPENCODE_BASIC_PASS")
+          echo "CADDY_PASS_HASH=$PASS_HASH" >> "$GITHUB_ENV"
 
-          cat > "$CONFIG_FILE" <<EOF
+          export POLLINATIONS_API_KEY
+          cat > "$CONFIG_FILE" <<'JSONEOF'
           {
-            "\$schema": "https://opencode.ai/config.json",
+            "$schema": "https://opencode.ai/config.json",
             "provider": {
               "pollinations": {
                 "npm": "@ai-sdk/openai-compatible",
                 "name": "Pollinations (OpenAI-compatible)",
                 "options": {
                   "baseURL": "https://gen.pollinations.ai/v1",
-                  "apiKey": "${POLLINATIONS_API_KEY}"
+                  "apiKey": "PLACEHOLDER_KEY"
                 },
                 "models": {
                   "stealth/glyph-cluster": {
@@ -128,20 +109,18 @@ EOF
             "autoupdate": false,
             "share": "disabled"
           }
-          EOF
+          JSONEOF
 
+          # تزریق کلید API با sed (جلوگیری از تفسیر در heredoc)
+          sed -i "s|PLACEHOLDER_KEY|${POLLINATIONS_API_KEY}|g" "$CONFIG_FILE"
           chmod 600 "$CONFIG_FILE"
-          echo "CADDY_PASS_HASH=$PASS_HASH" >> $GITHUB_ENV
-          echo "✅ کانفیگ ساخته شد (خارج از workspace): $CONFIG_FILE"
+          echo "✅ کانفیگ ساخته شد: $CONFIG_FILE"
 
-      # ─────────────────────────────────────────────
-      # ۴) OpenCode Web فقط روی localhost
-      # ─────────────────────────────────────────────
       - name: اجرای OpenCode Web
         run: |
           set -euo pipefail
           nohup opencode web --port "$OPENCODE_PORT" --hostname 127.0.0.1 > "$LOG_DIR/opencode.log" 2>&1 &
-          echo "OPENCODE_PID=$!" >> $GITHUB_ENV
+          echo "OPENCODE_PID=$!" >> "$GITHUB_ENV"
 
           for i in $(seq 1 30); do
             CODE=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 2 "http://127.0.0.1:$OPENCODE_PORT" || echo "000")
@@ -154,28 +133,25 @@ EOF
           done
           tail -n 40 "$LOG_DIR/opencode.log" || true
 
-      # ─────────────────────────────────────────────
-      # ۵) Caddy با Basic Auth
-      # ─────────────────────────────────────────────
       - name: راه‌اندازی Caddy
         run: |
           set -euo pipefail
           CADDY_DIR="${RUNNER_TEMP:-/tmp}/caddy"
           mkdir -p "$CADDY_DIR"
 
-          cat > "$CADDY_DIR/Caddyfile" <<EOF
+          cat > "$CADDY_DIR/Caddyfile" <<'CADDYEOF'
           {
             admin off
             auto_https off
           }
 
-          :${PROXY_PORT} {
+          :__PROXY_PORT__ {
             encode zstd gzip
 
             @auth {
               not {
                 basic_auth {
-                  ${OPENCODE_BASIC_USER} ${CADDY_PASS_HASH}
+                  __BASIC_USER__ __BASIC_HASH__
                 }
               }
             }
@@ -191,15 +167,20 @@ EOF
               -Server
             }
 
-            reverse_proxy 127.0.0.1:${OPENCODE_PORT} {
+            reverse_proxy 127.0.0.1:__OPENCODE_PORT__ {
               header_up Host {host}
               header_up X-Real-IP {remote_host}
             }
           }
-          EOF
+          CADDYEOF
+
+          sed -i "s|__PROXY_PORT__|${PROXY_PORT}|g" "$CADDY_DIR/Caddyfile"
+          sed -i "s|__OPENCODE_PORT__|${OPENCODE_PORT}|g" "$CADDY_DIR/Caddyfile"
+          sed -i "s|__BASIC_USER__|${OPENCODE_BASIC_USER}|g" "$CADDY_DIR/Caddyfile"
+          sed -i "s|__BASIC_HASH__|${CADDY_PASS_HASH}|g" "$CADDY_DIR/Caddyfile"
 
           nohup caddy run --config "$CADDY_DIR/Caddyfile" --adapter caddyfile > "$LOG_DIR/caddy.log" 2>&1 &
-          echo "CADDY_PID=$!" >> $GITHUB_ENV
+          echo "CADDY_PID=$!" >> "$GITHUB_ENV"
 
           sleep 5
           tail -n 30 "$LOG_DIR/caddy.log" || true
@@ -212,9 +193,6 @@ EOF
           fi
           echo "✅ Basic Auth فعال است"
 
-      # ─────────────────────────────────────────────
-      # ۶) تونل Cloudflare → Caddy
-      # ─────────────────────────────────────────────
       - name: راه‌اندازی تونل Cloudflare
         run: |
           set -euo pipefail
@@ -222,7 +200,7 @@ EOF
           chmod +x cloudflared
 
           nohup ./cloudflared tunnel --url "http://127.0.0.1:${PROXY_PORT}" --no-autoupdate > "$LOG_DIR/cloudflare.log" 2>&1 &
-          echo "CLOUDFLARED_PID=$!" >> $GITHUB_ENV
+          echo "CLOUDFLARED_PID=$!" >> "$GITHUB_ENV"
 
           sleep 8
           TUNNEL_URL=$(grep -oP 'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' "$LOG_DIR/cloudflare.log" | head -n1 || true)
@@ -232,7 +210,7 @@ EOF
             exit 1
           fi
           echo "✅ تونل: $TUNNEL_URL"
-          echo "TUNNEL_URL=$TUNNEL_URL" >> $GITHUB_ENV
+          echo "TUNNEL_URL=$TUNNEL_URL" >> "$GITHUB_ENV"
           echo "$TUNNEL_URL" > opencode-url.txt
 
       - name: نمایش خلاصه
@@ -246,21 +224,17 @@ EOF
             echo "- **Model:** \`stealth/glyph-cluster\`"
             echo "- **Base URL:** \`https://gen.pollinations.ai/v1\`"
             echo "- **مدت:** ${{ github.event.inputs.duration }} دقیقه"
-            echo ""
-            echo "> ⚠️ تمام ترافیک از Basic Auth + TLS تونل عبور می‌کند."
-          } >> $GITHUB_STEP_SUMMARY
+          } >> "$GITHUB_STEP_SUMMARY"
 
-      # ─────────────────────────────────────────────
-      # ۷) نگهبانی
-      # ─────────────────────────────────────────────
       - name: نگهبانی سرویس‌ها
         run: |
           set -uo pipefail
           DURATION="${{ github.event.inputs.duration }}"
           END_TIME=$(date -d "$DURATION minutes" +%s)
           TUNNEL_URL="${{ env.TUNNEL_URL }}"
+          CADDY_CFG="${RUNNER_TEMP:-/tmp}/caddy/Caddyfile"
 
-          while [ $(date +%s) -lt $END_TIME ]; do
+          while [ "$(date +%s)" -lt "$END_TIME" ]; do
             REMAINING=$((END_TIME - $(date +%s)))
             echo "[$(date +%H:%M:%S)] باقی‌مانده: $((REMAINING/60))m $((REMAINING%60))s"
 
@@ -278,7 +252,7 @@ EOF
               echo "⚠️ Caddy مشکل دارد (HTTP $CAD) - ری‌استارت..."
               pkill -f caddy || true
               sleep 2
-              nohup caddy run --config "${RUNNER_TEMP:-/tmp}/caddy/Caddyfile" --adapter caddyfile > "$LOG_DIR/caddy.log" 2>&1 &
+              nohup caddy run --config "$CADDY_CFG" --adapter caddyfile > "$LOG_DIR/caddy.log" 2>&1 &
               sleep 5
             fi
 
@@ -300,9 +274,6 @@ EOF
             sleep 30
           done
 
-      # ─────────────────────────────────────────────
-      # ۸) آپلود آرتیفکت (از RUNNER_TEMP)
-      # ─────────────────────────────────────────────
       - name: آپلود آرتیفکت
         if: always()
         uses: actions/upload-artifact@v4
@@ -313,25 +284,18 @@ EOF
             opencode-url.txt
           if-no-files-found: ignore
 
-      # ─────────────────────────────────────────────
-      # ۹) Commit & Push اجباری با اسکن نشت
-      # ─────────────────────────────────────────────
       - name: Commit و push اجباری
         if: always()
         run: |
           set -uo pipefail
-
-          # اطمینان از نبودن فایل حساس در staging
           git add -A
 
-          # اسکن سریع الگوهای حساس در تغییرات stage شده
           if git diff --cached -U0 | grep -aiE '(api[_-]?key|secret|token|password|Bearer)[=:" ]+[A-Za-z0-9_\-]{16,}'; then
             echo "❌ الگوی مشکوک به Secret در تغییرات پیدا شد — commit لغو شد"
             git reset
             exit 1
           fi
 
-          # اسکن نام فایل‌های حساس
           if git diff --cached --name-only | grep -aiE '(^|/)(\.env|opencode\.json|.*\.log)$|\.opencode/'; then
             echo "❌ فایل حساس در staging — commit لغو شد"
             git reset
@@ -346,12 +310,12 @@ EOF
           git commit -m "chore(opencode): auto-commit at $(date -u +%Y-%m-%dT%H:%M:%SZ) [skip ci]"
 
           for attempt in 1 2 3; do
-            if git push origin HEAD:${{ github.ref_name }}; then
+            if git push origin "HEAD:${{ github.ref_name }}"; then
               echo "✅ push موفق (تلاش $attempt)"
               exit 0
             fi
             echo "⚠️ push ناموفق، تلاش $attempt — rebase و مجدد..."
-            git pull --rebase --autostash origin ${{ github.ref_name }} || true
+            git pull --rebase --autostash origin "${{ github.ref_name }}" || true
             sleep 3
           done
           echo "❌ push در ۳ تلاش ناموفق بود"
