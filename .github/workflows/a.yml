@@ -86,7 +86,6 @@ jobs:
           PASS_HASH=$(caddy hash-password --plaintext "$OPENCODE_BASIC_PASS")
           echo "CADDY_PASS_HASH=$PASS_HASH" >> "$GITHUB_ENV"
 
-          export POLLINATIONS_API_KEY
           cat > "$CONFIG_FILE" <<'JSONEOF'
           {
             "$schema": "https://opencode.ai/config.json",
@@ -111,8 +110,14 @@ jobs:
           }
           JSONEOF
 
-          # تزریق کلید API با sed (جلوگیری از تفسیر در heredoc)
-          sed -i "s|PLACEHOLDER_KEY|${POLLINATIONS_API_KEY}|g" "$CONFIG_FILE"
+          python3 - "$CONFIG_FILE" <<'PY'
+          import sys, os
+          p = sys.argv[1]
+          s = open(p).read()
+          s = s.replace("PLACEHOLDER_KEY", os.environ["POLLINATIONS_API_KEY"])
+          open(p, "w").write(s)
+          PY
+
           chmod 600 "$CONFIG_FILE"
           echo "✅ کانفیگ ساخته شد: $CONFIG_FILE"
 
@@ -148,15 +153,8 @@ jobs:
           :__PROXY_PORT__ {
             encode zstd gzip
 
-            @auth {
-              not {
-                basic_auth {
-                  __BASIC_USER__ __BASIC_HASH__
-                }
-              }
-            }
-            respond @auth "Authentication required" 401 {
-              close
+            basic_auth {
+              __BASIC_USER__ __BASIC_HASH__
             }
 
             header {
@@ -174,10 +172,22 @@ jobs:
           }
           CADDYEOF
 
-          sed -i "s|__PROXY_PORT__|${PROXY_PORT}|g" "$CADDY_DIR/Caddyfile"
-          sed -i "s|__OPENCODE_PORT__|${OPENCODE_PORT}|g" "$CADDY_DIR/Caddyfile"
-          sed -i "s|__BASIC_USER__|${OPENCODE_BASIC_USER}|g" "$CADDY_DIR/Caddyfile"
-          sed -i "s|__BASIC_HASH__|${CADDY_PASS_HASH}|g" "$CADDY_DIR/Caddyfile"
+          python3 - "$CADDY_DIR/Caddyfile" <<'PY'
+          import sys, os
+          p = sys.argv[1]
+          s = open(p).read()
+          s = s.replace("__PROXY_PORT__", os.environ["PROXY_PORT"])
+          s = s.replace("__OPENCODE_PORT__", os.environ["OPENCODE_PORT"])
+          s = s.replace("__BASIC_USER__", os.environ["OPENCODE_BASIC_USER"])
+          s = s.replace("__BASIC_HASH__", os.environ["CADDY_PASS_HASH"])
+          open(p, "w").write(s)
+          PY
+
+          echo "----- Caddyfile نهایی -----"
+          cat "$CADDY_DIR/Caddyfile"
+          echo "---------------------------"
+
+          caddy validate --config "$CADDY_DIR/Caddyfile" --adapter caddyfile
 
           nohup caddy run --config "$CADDY_DIR/Caddyfile" --adapter caddyfile > "$LOG_DIR/caddy.log" 2>&1 &
           echo "CADDY_PID=$!" >> "$GITHUB_ENV"
@@ -189,6 +199,13 @@ jobs:
           echo "بدون رمز → HTTP $NOAUTH (باید 401 باشد)"
           if [ "$NOAUTH" != "401" ]; then
             echo "❌ Basic Auth کار نمی‌کند"
+            exit 1
+          fi
+
+          AUTH=$(curl -s -o /dev/null -w "%{http_code}" -u "${OPENCODE_BASIC_USER}:${OPENCODE_BASIC_PASS}" "http://127.0.0.1:${PROXY_PORT}/" || echo "000")
+          echo "با رمز → HTTP $AUTH (نباید 401 باشد)"
+          if [ "$AUTH" = "401" ]; then
+            echo "❌ رمز درست پذیرفته نمی‌شود"
             exit 1
           fi
           echo "✅ Basic Auth فعال است"
