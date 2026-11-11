@@ -6,3 +6,11 @@ opencode-url.txt
 opencode.json
 .env
 .env.*
+
+# === OpenCode runner artifacts (auto) ===
+*.log
+opencode-url.txt
+.opencode/
+opencode.json
+.env
+.env.*
