@@ -57,7 +57,7 @@ jobs:
           mkdir -p "$CONFIG_ROOT/opencode"
           echo "XDG_CONFIG_HOME=$CONFIG_ROOT" >> "$GITHUB_ENV"
 
-          printf '\n# === OpenCode runner artifacts (auto) ===\n*.log\nopencode-url.txt\n.opencode/\nopencode.json\n.env\n.env.*\n' >> .gitignore
+          printf '\n# === OpenCode runner artifacts (auto) ===\n*.log\nopencode-url.txt\n.opencode/\nopencode.json\nfree_tool_models_report.json\n.env\n.env.*\n' >> .gitignore
 
       - name: نصب Node.js
         uses: actions/setup-node@v4
@@ -81,6 +81,303 @@ jobs:
           rm -f /tmp/caddy /tmp/caddy.tar.gz
           caddy version
 
+      - name: نصب وابستگی‌های پایتون
+        run: |
+          python3 -m pip install --quiet --disable-pip-version-check requests
+
+      # ─────────────────────────────────────────────
+      # کشف مدل‌ها: فقط مدل‌هایی که هم موفق و هم Δ=0
+      # ─────────────────────────────────────────────
+      - name: کشف و تست مدل‌های رایگان با Δ=0
+        id: discover
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          REPORT="$RUNNER_TEMP/free_tool_models_report.json"
+
+          python3 - "$REPORT" <<'PYEOF'
+          import json
+          import os
+          import sys
+          import time
+
+          import requests
+
+          BASE = "https://gen.pollinations.ai"
+          MODELS_URL = f"{BASE}/text/models"
+          CHAT_URL = f"{BASE}/v1/chat/completions"
+          BALANCE_URL = f"{BASE}/account/balance"
+
+          API_KEY = os.environ.get("POLLINATIONS_API_KEY", "")
+          if not API_KEY:
+              sys.exit("POLLINATIONS_API_KEY not set")
+
+          HEADERS = {
+              "Authorization": f"Bearer {API_KEY}",
+              "Content-Type": "application/json",
+          }
+
+          TIMEOUT = 9
+          RETRIES = 2
+          MAX_TOKENS = 512
+          SLEEP_BETWEEN = 1.2
+
+          TEST_MESSAGES = [
+              {"role": "user", "content": "Reply with exactly one word: what color is the sky on a clear day?"}
+          ]
+          TEST_TOOLS = [{
+              "type": "function",
+              "function": {
+                  "name": "ping",
+                  "description": "Trivial echo tool for testing native tool calling.",
+                  "parameters": {
+                      "type": "object",
+                      "properties": {"value": {"type": "string"}},
+                      "required": ["value"],
+                  },
+              },
+          }]
+
+
+          def fetch_models():
+              r = requests.get(MODELS_URL, headers=HEADERS, timeout=30)
+              r.raise_for_status()
+              data = r.json()
+              if isinstance(data, list):
+                  return data
+              if isinstance(data, dict):
+                  for key in ("data", "models", "items"):
+                      if isinstance(data.get(key), list):
+                          return data[key]
+              raise RuntimeError(f"unexpected response shape: {type(data)}")
+
+
+          def has_no_pricing_numbers(pricing) -> bool:
+              if not isinstance(pricing, dict):
+                  return False
+              numeric_keys = [k for k in pricing if k != "currency"]
+              return len(numeric_keys) == 0
+
+
+          def has_tool_calling(model: dict) -> bool:
+              caps = model.get("capabilities") or []
+              if "tool_calling" in caps:
+                  return True
+              return bool(model.get("tools"))
+
+
+          def filter_free_with_tools(models):
+              out = []
+              for m in models:
+                  if not has_no_pricing_numbers(m.get("pricing")):
+                      continue
+                  if not has_tool_calling(m):
+                      continue
+                  out.append({
+                      "id": m.get("name"),
+                      "title": m.get("title") or m.get("name"),
+                      "publisher": m.get("publisher") or m.get("brand"),
+                      "community": bool(m.get("community")),
+                      "supports_streaming": m.get("supports_streaming", True),
+                  })
+              out.sort(key=lambda x: (x["community"], x["id"]))
+              return out
+
+
+          def get_balance():
+              try:
+                  r = requests.get(BALANCE_URL, headers=HEADERS, timeout=20)
+                  if r.status_code != 200:
+                      return {"error": f"HTTP {r.status_code}", "body": r.text[:200]}
+                  return r.json()
+              except requests.RequestException as e:
+                  return {"error": str(e)}
+
+
+          def balance_number(b):
+              if not isinstance(b, dict) or "error" in b:
+                  return None
+              if isinstance(b.get("accountBalance"), dict):
+                  v = b["accountBalance"].get("total")
+                  if isinstance(v, (int, float)):
+                      return float(v)
+              v = b.get("balance")
+              return float(v) if isinstance(v, (int, float)) else None
+
+
+          def parse_stream(resp):
+              content_parts, tool_names = [], []
+              for raw in resp.iter_lines(decode_unicode=True):
+                  if not raw:
+                      continue
+                  line = raw.strip()
+                  if not line.startswith("data:"):
+                      continue
+                  payload = line[5:].strip()
+                  if payload == "[DONE]":
+                      break
+                  try:
+                      chunk = json.loads(payload)
+                  except Exception:
+                      continue
+                  choices = chunk.get("choices") or []
+                  if not choices:
+                      continue
+                  delta = choices[0].get("delta") or {}
+                  if delta.get("content"):
+                      content_parts.append(delta["content"])
+                  for tc in delta.get("tool_calls") or []:
+                      name = (tc.get("function") or {}).get("name")
+                      if name:
+                          tool_names.append(name)
+              return "".join(content_parts).strip(), tool_names
+
+
+          def call_model(model_id, use_stream):
+              payload = {
+                  "model": model_id,
+                  "messages": TEST_MESSAGES,
+                  "max_tokens": MAX_TOKENS,
+                  "temperature": 0,
+                  "tools": TEST_TOOLS,
+                  "tool_choice": "auto",
+                  "stream": use_stream,
+              }
+
+              last_err = None
+              for attempt in range(RETRIES + 1):
+                  try:
+                      r = requests.post(
+                          CHAT_URL, headers=HEADERS,
+                          data=json.dumps(payload), timeout=TIMEOUT,
+                          stream=use_stream,
+                      )
+
+                      if r.status_code >= 400:
+                          try:
+                              body = r.json()
+                              msg = (body.get("error", {}) or {}).get("message") or r.text
+                          except Exception:
+                              msg = r.text
+                          low = msg.lower()
+                          if not use_stream and ("stream:true" in low or "stream: true" in low
+                                                 or "stream:false is not supported" in low):
+                              use_stream = True
+                              payload["stream"] = True
+                              continue
+                          return False, f"HTTP {r.status_code}: {msg[:200]}", use_stream
+
+                      if use_stream:
+                          content, tool_names = parse_stream(r)
+                          if tool_names:
+                              return True, f"tool_calls={tool_names} content={content[:80]!r}", use_stream
+                          if not content:
+                              return False, "stream returned empty", use_stream
+                          return True, f"content={content[:120]!r}", use_stream
+                      else:
+                          data = r.json()
+                          msg = ((data.get("choices") or [{}])[0].get("message") or {})
+                          content = (msg.get("content") or "").strip()
+                          tool_calls = msg.get("tool_calls") or []
+                          if tool_calls:
+                              names = [tc.get("function", {}).get("name", "?") for tc in tool_calls]
+                              return True, f"tool_calls={names} content={content[:80]!r}", use_stream
+                          return True, f"content={content[:120]!r}", use_stream
+
+                  except requests.Timeout:
+                      last_err = "timeout"
+                  except requests.RequestException as e:
+                      last_err = f"request error: {e}"
+
+                  if attempt < RETRIES:
+                      time.sleep(2 * (attempt + 1))
+
+              return False, f"failed after retries: {last_err}", use_stream
+
+
+          out_path = sys.argv[1]
+
+          try:
+              all_models = fetch_models()
+          except Exception as e:
+              print(f"خطا در دریافت لیست: {e}")
+              json.dump({"free_ok": [], "details": [], "error": str(e)},
+                        open(out_path, "w"), ensure_ascii=False, indent=2)
+              sys.exit(0)
+
+          candidates = filter_free_with_tools(all_models)
+          print(f"کل مدل‌ها: {len(all_models)} | کاندیدها: {len(candidates)}")
+
+          b0 = get_balance()
+          n0 = balance_number(b0)
+          print(f"موجودی اولیه: {n0 if n0 is not None else 'نامشخص'}")
+
+          results = []
+          for i, c in enumerate(candidates, 1):
+              mid = c["id"]
+              print(f"[{i}/{len(candidates)}] {mid}")
+              ok, detail, used_stream = call_model(mid, bool(c.get("supports_streaming", True)))
+              print(f"  {'✅' if ok else '❌'} {detail}")
+
+              n = balance_number(get_balance())
+              delta = (n - n0) if (n0 is not None and n is not None) else None
+              print(f"  Δ={delta}")
+
+              results.append({
+                  "model": mid,
+                  "title": c["title"],
+                  "community": c["community"],
+                  "stream": used_stream,
+                  "ok": ok,
+                  "detail": detail,
+                  "delta": delta,
+              })
+              time.sleep(SLEEP_BETWEEN)
+
+          # فقط موفق و Δ دقیقاً صفر
+          free_ok = [
+              r["model"] for r in results
+              if r["ok"] and r["delta"] is not None and abs(r["delta"]) < 1e-9
+          ]
+          paid_ok = [
+              r["model"] for r in results
+              if r["ok"] and (r["delta"] is None or abs(r["delta"]) >= 1e-9)
+          ]
+          failed = [r["model"] for r in results if not r["ok"]]
+
+          print("=" * 60)
+          print("free_ok (Δ=0 و موفق):", free_ok)
+          print("paid_ok:", paid_ok)
+          print("failed:", failed)
+
+          json.dump({
+              "initial_balance": n0,
+              "final_balance": balance_number(get_balance()),
+              "free_ok": free_ok,
+              "paid_ok": paid_ok,
+              "failed": failed,
+              "details": results,
+          }, open(out_path, "w"), ensure_ascii=False, indent=2)
+          PYEOF
+
+          if [ ! -f "$REPORT" ]; then
+            echo "⚠️ گزارش تولید نشد — لیست خالی"
+            echo "FREE_MODELS_JSON=[]" >> "$GITHUB_ENV"
+            exit 0
+          fi
+
+          FREE_JSON=$(python3 - "$REPORT" <<'PY'
+          import json, sys
+          d = json.load(open(sys.argv[1]))
+          print(json.dumps(d.get("free_ok", []), ensure_ascii=False))
+          PY
+          )
+          echo "FREE_MODELS_JSON=$FREE_JSON" >> "$GITHUB_ENV"
+          echo "✅ مدل‌های رایگان (Δ=0): $FREE_JSON"
+
+      # ─────────────────────────────────────────────
+      # ساخت کانفیگ OpenCode با مدل‌های کشف‌شده
+      # ─────────────────────────────────────────────
       - name: ساخت کانفیگ OpenCode
         run: |
           set -euo pipefail
@@ -89,40 +386,58 @@ jobs:
           PASS_HASH=$(caddy hash-password --plaintext "$OPENCODE_BASIC_PASS")
           echo "CADDY_PASS_HASH=$PASS_HASH" >> "$GITHUB_ENV"
 
-          cat > "$CONFIG_FILE" <<'JSONEOF'
-          {
-            "$schema": "https://opencode.ai/config.json",
-            "provider": {
-              "pollinations": {
-                "npm": "@ai-sdk/openai-compatible",
-                "name": "Pollinations (OpenAI-compatible)",
-                "options": {
-                  "baseURL": "https://gen.pollinations.ai/v1",
-                  "apiKey": "PLACEHOLDER_KEY"
-                },
-                "models": {
-                  "stealth/glyph-cluster": {
-                    "name": "stealth/glyph-cluster"
-                  }
-                }
-              }
-            },
-            "model": "pollinations/stealth/glyph-cluster",
-            "autoupdate": false,
-            "share": "disabled"
-          }
-          JSONEOF
+          FREE_MODELS="${FREE_MODELS_JSON:-[]}"
 
-          python3 - "$CONFIG_FILE" <<'PY'
-          import sys, os
-          p = sys.argv[1]
-          s = open(p).read()
-          s = s.replace("PLACEHOLDER_KEY", os.environ["POLLINATIONS_API_KEY"])
-          open(p, "w").write(s)
+          python3 - "$CONFIG_FILE" "$POLLINATIONS_API_KEY" "$FREE_MODELS" <<'PY'
+          import json, sys
+          out_path, api_key, free_models_json = sys.argv[1], sys.argv[2], sys.argv[3]
+          try:
+              free_models = json.loads(free_models_json)
+              if not isinstance(free_models, list):
+                  free_models = []
+          except Exception:
+              free_models = []
+
+          models = {
+              "stealth/glyph-cluster": {"name": "stealth/glyph-cluster"},
+          }
+          for mid in free_models:
+              if isinstance(mid, str) and mid and mid not in models:
+                  models[mid] = {"name": mid}
+
+          if "stealth/glyph-cluster" in free_models:
+              default_model = "pollinations/stealth/glyph-cluster"
+          elif free_models:
+              default_model = f"pollinations/{free_models[0]}"
+          else:
+              default_model = "pollinations/stealth/glyph-cluster"
+
+          config = {
+              "$schema": "https://opencode.ai/config.json",
+              "provider": {
+                  "pollinations": {
+                      "npm": "@ai-sdk/openai-compatible",
+                      "name": "Pollinations (OpenAI-compatible)",
+                      "options": {
+                          "baseURL": "https://gen.pollinations.ai/v1",
+                          "apiKey": api_key,
+                      },
+                      "models": models,
+                  }
+              },
+              "model": default_model,
+              "autoupdate": False,
+              "share": "disabled",
+          }
+
+          json.dump(config, open(out_path, "w"), ensure_ascii=False, indent=2)
+          print(f"✅ کانفیگ با {len(models)} مدل ساخته شد. پیش‌فرض: {default_model}")
           PY
 
           chmod 600 "$CONFIG_FILE"
-          echo "✅ کانفیگ ساخته شد: $CONFIG_FILE"
+          echo "----- محتوای کانفیگ -----"
+          cat "$CONFIG_FILE"
+          echo "-------------------------"
 
       - name: اجرای OpenCode Web
         run: |
@@ -186,10 +501,6 @@ jobs:
           open(p, "w").write(s)
           PY
 
-          echo "----- Caddyfile نهایی -----"
-          cat "$CADDY_DIR/Caddyfile"
-          echo "---------------------------"
-
           caddy validate --config "$CADDY_DIR/Caddyfile" --adapter caddyfile
 
           nohup caddy run --config "$CADDY_DIR/Caddyfile" --adapter caddyfile > "$LOG_DIR/caddy.log" 2>&1 &
@@ -241,8 +552,7 @@ jobs:
             echo "- **URL:** ${{ env.TUNNEL_URL }}"
             echo "- **Username:** (از Secrets → OPENCODE_BASIC_USER)"
             echo "- **Password:** (از Secrets → OPENCODE_BASIC_PASS)"
-            echo "- **Model:** \`stealth/glyph-cluster\`"
-            echo "- **Base URL:** \`https://gen.pollinations.ai/v1\`"
+            echo "- **مدل‌های رایگان (Δ=0):** \`${FREE_MODELS_JSON:-[]}\`"
             echo "- **مدت:** ${{ github.event.inputs.duration }} دقیقه"
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -302,6 +612,7 @@ jobs:
           path: |
             ${{ env.LOG_DIR }}/*.log
             opencode-url.txt
+            ${{ runner.temp }}/free_tool_models_report.json
           if-no-files-found: ignore
 
       - name: Commit و push اجباری
@@ -316,7 +627,7 @@ jobs:
             exit 1
           fi
 
-          if git diff --cached --name-only | grep -aiE '(^|/)(\.env|opencode\.json|.*\.log)$|\.opencode/'; then
+          if git diff --cached --name-only | grep -aiE '(^|/)(\.env|opencode\.json|.*\.log|free_tool_models_report\.json)$|\.opencode/'; then
             echo "❌ فایل حساس در staging — commit لغو شد"
             git reset
             exit 1
