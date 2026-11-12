@@ -20,6 +20,9 @@ android {
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+        ndk {
+            abiFilters += listOf("arm64-v8a")
+        }
     }
 
     buildTypes {
@@ -44,6 +47,9 @@ kotlin {
 dependencies {
     implementation("org.tukaani:xz:1.9")
     implementation("org.apache.commons:commons-compress:1.26.2")
+    implementation("androidx.annotation:annotation:1.9.0")
+    implementation(project(":terminal-emulator"))
+    implementation(project(":terminal-view"))
 }
 
 flutter {

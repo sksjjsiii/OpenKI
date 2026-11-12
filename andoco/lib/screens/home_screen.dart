@@ -6,8 +6,6 @@ import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import '../services/opencode_bridge.dart';
-import '../terminal/terminal_emulator.dart';
-import '../terminal/terminal_view.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -30,15 +28,14 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   bool _loading = true;
   bool _webLoaded = false;
   bool _autoSwitchToWeb = false;
-  double _fontSize = 13;
-  String _status = 'در حال شروع...';
+  String _status = 'Starting...';
   bool _creatingSession = false;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _addLocalTerminal('main', title: 'اصلی', makeActive: true);
+    _addLocalTerminal('main', title: 'Main', makeActive: true);
     _webController = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
       ..setBackgroundColor(const Color(0xFF000000));
@@ -47,15 +44,14 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   }
 
   _UiTermSession _addLocalTerminal(String id, {String? title, bool makeActive = false}) {
-    final emu = TerminalEmulator(cols: 300, rows: 60);
-    final s = _UiTermSession(id: id, title: title ?? 'ترمینال ${_terms.length + 1}', emulator: emu);
+    final s = _UiTermSession(id: id, title: title ?? 'Terminal ${_terms.length + 1}');
     setState(() { _terms.add(s); if (makeActive) _activeTerm = _terms.length - 1; });
     return s;
   }
 
   _UiTermSession _getOrCreate(String id) {
     for (final t in _terms) { if (t.id == id) return t; }
-    return _addLocalTerminal(id, title: id == 'main' ? 'اصلی' : 'ترمینال ${_terms.length + 1}', makeActive: false);
+    return _addLocalTerminal(id, title: id == 'main' ? 'Main' : 'Terminal ${_terms.length + 1}', makeActive: false);
   }
 
   Future<void> _createNewTerminal() async {
@@ -63,11 +59,10 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     setState(() => _creatingSession = true);
     try {
       final id = await _bridge.createSession();
-      final t = _addLocalTerminal(id, title: 'ترمینال ${_terms.length}', makeActive: true);
-      t.emulator.write('در حال اتصال به نشست جدید...\n');
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('ترمینال جدید ایجاد شد: $id')));
+      _addLocalTerminal(id, title: 'Terminal ${_terms.length}', makeActive: true);
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('New terminal created: $id')));
     } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('خطا در ایجاد ترمینال: $e')));
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to create terminal: $e')));
     } finally {
       if (mounted) setState(() => _creatingSession = false);
     }
@@ -84,21 +79,15 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     final line = ev.line;
     _logBuffer.add('[${ev.session}] $line');
     if (_logBuffer.length > 12000) _logBuffer.removeRange(0, _logBuffer.length - 12000);
-
-    final t = _getOrCreate(ev.session);
-    if (!(line.contains('__ANDOCO_SHELL_READY__') || line.contains('__ANDOCO_BOOTSTRAP_DONE__') || line.contains('__ANDOCO_BOOTSTRAP_FAILED__') || line.contains('__ANDOCO_STARTING_SERVER__'))) {
-      t.emulator.write(line.endsWith('\n') ? '$line' : '$line\n');
-    }
+    _getOrCreate(ev.session);
     if (mounted) setState(() {});
-
-    if (line.startsWith('[وضعیت] ')) { final st = line.substring(8).trim(); if (mounted) setState(()=>_status=st); }
-    else if (line.startsWith('[status] ')) { final st = line.substring(9).trim(); if (mounted) setState(()=>_status=st); }
+    if (line.startsWith('[status] ')) { final st = line.substring(9).trim(); if (mounted) setState(()=>_status=st); }
     if (line.contains('__ANDOCO_BOOTSTRAP_DONE__')) { if (mounted) setState(()=>_bootstrapped=true); }
-    if (!_serverReady && (line.contains('http://127.0.0.1:4096') || line.contains('OpenCode آماده'))) _onServerReady();
+    if (!_serverReady && (line.contains('http://127.0.0.1:4096') || line.contains('OpenCode server ready'))) _onServerReady();
   }
 
   Future<void> _init() async {
-    _getOrCreate('main').emulator.write('در حال اتصال به سرویس Andoco...\n');
+    _getOrCreate('main');
     await _bridge.startService();
     await _requestPermissions();
     await _refreshState();
@@ -142,14 +131,13 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   Future<void> _reload() async {
     await _bridge.reload();
-    setState(() { _serverReady = false; _webLoaded = false; _status = 'در حال راه‌اندازی مجدد نشست...'; });
-    _getOrCreate('main').emulator.write('\n[وضعیت] درخواست راه‌اندازی مجدد نشست ارسال شد.\n');
+    setState(() { _serverReady = false; _webLoaded = false; _status = 'Restarting session...'; });
   }
 
   Future<void> _copyAllLogs() async {
     await Clipboard.setData(ClipboardData(text: _logBuffer.join('\n')));
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('همه لاگ‌ها کپی شد')));
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('All logs copied')));
   }
 
   void _sendToActive(String data) { if (_terms.isEmpty) return; _bridge.sendInput(data, session: _terms[_activeTerm].id); }
@@ -171,14 +159,14 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       _buildSettingsPage(),
       _buildAboutPage(),
     ];
-    const titles = ['ترمینال', 'OpenCode', 'فایل‌ها', 'ابزارها', 'تنظیمات', 'درباره'];
+    const titles = ['Terminal', 'OpenCode', 'Files', 'Tools', 'Settings', 'About'];
     return Scaffold(
       appBar: AppBar(
         title: Text('Andoco — ${titles[_tabIndex]}'),
         actions: [
-          if (_tabIndex == 0) IconButton(icon: _creatingSession ? const SizedBox(width:18,height:18,child:CircularProgressIndicator(strokeWidth:2)) : const Icon(Icons.add), tooltip: 'ترمینال جدید', onPressed: _createNewTerminal),
-          IconButton(icon: const Icon(Icons.copy_all), tooltip: 'کپی همه لاگ‌ها', onPressed: _copyAllLogs),
-          IconButton(icon: const Icon(Icons.refresh), tooltip: 'راه‌اندازی مجدد', onPressed: _reload),
+          if (_tabIndex == 0) IconButton(icon: _creatingSession ? const SizedBox(width:18,height:18,child:CircularProgressIndicator(strokeWidth:2)) : const Icon(Icons.add), tooltip: 'New terminal', onPressed: _createNewTerminal),
+          IconButton(icon: const Icon(Icons.copy_all), tooltip: 'Copy all logs', onPressed: _copyAllLogs),
+          IconButton(icon: const Icon(Icons.refresh), tooltip: 'Restart session', onPressed: _reload),
         ],
       ),
       body: _loading ? const Center(child: CircularProgressIndicator()) : Column(children: [_buildStatusBar(), Expanded(child: pages[_tabIndex])]),
@@ -186,12 +174,12 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         selectedIndex: _tabIndex,
         onDestinationSelected: (i) => setState(()=>_tabIndex=i),
         destinations: const [
-          NavigationDestination(icon: Icon(Icons.terminal), label: 'ترمینال'),
+          NavigationDestination(icon: Icon(Icons.terminal), label: 'Terminal'),
           NavigationDestination(icon: Icon(Icons.language), label: 'OpenCode'),
-          NavigationDestination(icon: Icon(Icons.folder), label: 'فایل‌ها'),
-          NavigationDestination(icon: Icon(Icons.build), label: 'ابزارها'),
-          NavigationDestination(icon: Icon(Icons.settings), label: 'تنظیمات'),
-          NavigationDestination(icon: Icon(Icons.info_outline), label: 'درباره'),
+          NavigationDestination(icon: Icon(Icons.folder), label: 'Files'),
+          NavigationDestination(icon: Icon(Icons.build), label: 'Tools'),
+          NavigationDestination(icon: Icon(Icons.settings), label: 'Settings'),
+          NavigationDestination(icon: Icon(Icons.info_outline), label: 'About'),
         ],
       ),
     );
@@ -204,7 +192,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       child: Row(children: [
         if (!_serverReady) const SizedBox(width:14,height:14,child:CircularProgressIndicator(strokeWidth:2)) else const Icon(Icons.check_circle,size:16,color:Colors.greenAccent),
         const SizedBox(width:8),
-        Expanded(child: Directionality(textDirection: TextDirection.rtl, child: Text(_status, maxLines:2, overflow:TextOverflow.ellipsis, style: const TextStyle(fontSize:12)))),
+        Expanded(child: Text(_status, maxLines:2, overflow:TextOverflow.ellipsis, style: const TextStyle(fontSize:12))),
       ]),
     );
   }
@@ -214,10 +202,20 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     final t = _terms[_activeTerm.clamp(0, _terms.length-1)];
     return Column(children: [
       Container(color: const Color(0xFF161B22), padding: const EdgeInsets.symmetric(horizontal:8, vertical:4), child: SingleChildScrollView(scrollDirection: Axis.horizontal, child: Row(children: [
-        for (int i=0;i<_terms.length;i++) Padding(padding: const EdgeInsets.only(left:6), child: InputChip(label: Text(_terms[i].title), selected: i==_activeTerm, onPressed: ()=>setState(()=>_activeTerm=i), onDeleted: (_terms.length>1 && _terms[i].id!='main') ? ()=>_closeTerminal(i) : null)),
-        ActionChip(label: const Text('+ جدید'), onPressed: _createNewTerminal),
+        for (int i=0;i<_terms.length;i++) Padding(padding: const EdgeInsets.only(right:6), child: InputChip(label: Text(_terms[i].title), selected: i==_activeTerm, onPressed: ()=>setState(()=>_activeTerm=i), onDeleted: (_terms.length>1 && _terms[i].id!='main') ? ()=>_closeTerminal(i) : null)),
+        ActionChip(label: const Text('+ New'), onPressed: _createNewTerminal),
       ]))),
-      Expanded(child: CustomTerminalView(key: ValueKey(t.id), emulator: t.emulator, onInput: (d)=>_sendToActive(d), fontSize: _fontSize)),
+      Expanded(child: Container(
+        color: Colors.black,
+        padding: EdgeInsets.zero,
+        alignment: Alignment.topLeft,
+        child: Directionality(textDirection: TextDirection.ltr, child: AndroidView(
+          key: ValueKey('termux-${t.id}'),
+          viewType: 'termux-terminal',
+          creationParams: {'sessionId': t.id},
+          creationParamsCodec: const StandardMessageCodec(),
+        )),
+      )),
       _buildQuickKeys(t.id),
     ]);
   }
@@ -227,7 +225,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     return Container(color: const Color(0xFF0D1117), padding: const EdgeInsets.symmetric(horizontal:6, vertical:6), child: SafeArea(top:false, child: SingleChildScrollView(scrollDirection: Axis.horizontal, child: Row(children: [
       k('ESC','\x1b'), k('TAB','\t'), k('CTRL+C','\x03'), k('CTRL+D','\x04'), k('/','/'), k('-','-'), k('~','~'),
       k('HOME','\x1b[H'), k('END','\x1b[F'), k('↑','\x1b[A'), k('↓','\x1b[B'), k('←','\x1b[D'), k('→','\x1b[C'),
-      TextButton.icon(onPressed: _copyAllLogs, icon: const Icon(Icons.copy,size:16), label: const Text('کپی لاگ')),
+      TextButton.icon(onPressed: _copyAllLogs, icon: const Icon(Icons.copy,size:16), label: const Text('Copy logs')),
     ]))));
   }
 
@@ -235,71 +233,69 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     if (!_serverReady) {
       return Center(child: Padding(padding: const EdgeInsets.all(20), child: Column(mainAxisSize: MainAxisSize.min, children: [
         const Icon(Icons.hourglass_top,size:40), const SizedBox(height:12),
-        Directionality(textDirection: TextDirection.rtl, child: Text(_status, textAlign: TextAlign.center)),
+        Text(_status, textAlign: TextAlign.center),
         const SizedBox(height:12),
-        ElevatedButton.icon(onPressed: ()=>setState(()=>_tabIndex=0), icon: const Icon(Icons.terminal), label: const Text('رفتن به ترمینال')),
+        ElevatedButton.icon(onPressed: ()=>setState(()=>_tabIndex=0), icon: const Icon(Icons.terminal), label: const Text('Open Terminal')),
       ])));
     }
     return WebViewWidget(controller: _webController);
   }
 
   Widget _buildToolsPage() {
-    return Directionality(textDirection: TextDirection.rtl, child: ListView(padding: const EdgeInsets.all(16), children: [
-      const Text('ابزارها و تعمیر خودکار', style: TextStyle(fontSize:20,fontWeight: FontWeight.bold)),
+    return ListView(padding: const EdgeInsets.all(16), children: [
+      const Text('Tools & Auto Repair', style: TextStyle(fontSize:20,fontWeight: FontWeight.bold)),
       const SizedBox(height:12),
-      Card(child: ListTile(leading: const Icon(Icons.auto_fix_high), title: const Text('تعمیر و تکمیل نصب (بدون حذف داده)'), subtitle: const Text('رفع dpkg/perl، نصب Node/OpenCode، تلاش مجدد npm'), onTap: () { setState(()=>_tabIndex=0); _sendToActive("dpkg --configure -a --force-confdef --force-confold --force-overwrite || true; apt-get -o APT::Sandbox::User=root -f install -y || true; apt-get -o APT::Sandbox::User=root update || true; command -v npm >/dev/null 2>&1 || (curl -fsSL https://nodejs.org/dist/v20.18.0/node-v20.18.0-linux-arm64.tar.xz -o /tmp/n.tgz && tar -xJf /tmp/n.tgz -C /usr/local --strip-components=1); npm config set cache /root/.npm-andoco; rm -rf /root/.npm-andoco/_cacache/tmp || true; npm cache verify || npm cache clean --force || true; npm install -g opencode-termux --no-audit --no-fund || npm install -g opencode-ai --no-audit --no-fund || true; hash -r; opencode --version 2>&1 || echo done\n"); })),
-      _toolCard('عیب‌یابی/نصب', [
-        _cmd('وضعیت شبکه','getent hosts registry.npmjs.org || ping -c1 1.1.1.1 || echo no-network'),
-        _cmd('نسخه‌ها','node -v 2>&1; npm -v 2>&1; opencode --version 2>&1 || echo no-opencode'),
-        _cmd('رفع dpkg کامل','dpkg --configure -a --force-confdef --force-confold --force-overwrite || true; apt-get -o APT::Sandbox::User=root -f install -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold -o Dpkg::Options::=--force-overwrite || true'),
-        _cmd('نصب پایه apt','apt-get -o APT::Sandbox::User=root update && apt-get -o APT::Sandbox::User=root install -y --no-install-recommends ca-certificates curl git xz-utils tar nano'),
-        _cmd('نصب Node باینری','mkdir -p /tmp && curl -fL --retry 4 https://nodejs.org/dist/v20.18.0/node-v20.18.0-linux-arm64.tar.xz -o /tmp/node.tar.xz && tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 && node -v && npm -v'),
-        _cmd('نصب OpenCode','rm -rf /root/.npm-andoco/_cacache/tmp || true; npm cache clean --force || true; npm install -g opencode-termux --no-audit --no-fund --cache /root/.npm-andoco || npm install -g opencode-ai --no-audit --no-fund --cache /root/.npm-andoco'),
-        _cmd('اجرای OpenCode','opencode web --port 4096 --hostname 127.0.0.1 --print-logs --log-level INFO --pure'),
+      Card(child: ListTile(leading: const Icon(Icons.auto_fix_high), title: const Text('Repair & complete install (no data loss)'), subtitle: const Text('Fix dpkg/perl, install Node/OpenCode, retry npm'), onTap: () { setState(()=>_tabIndex=0); _sendToActive("export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; dpkg --configure -a --force-confdef --force-confold --force-overwrite --force-unsafe-io || true; apt-get -o APT::Sandbox::User=root -f install -y || true; apt-get -o APT::Sandbox::User=root update || true; command -v npm >/dev/null 2>&1 || (curl -fsSL https://nodejs.org/dist/v20.18.0/node-v20.18.0-linux-arm64.tar.xz -o /tmp/n.tgz && tar -xJf /tmp/n.tgz -C /usr/local --strip-components=1); npm config set cache /root/.npm-cache; rm -rf /root/.npm-cache/_cacache/tmp || true; npm cache verify || npm cache clean --force || true; npm install -g opencode-termux --no-audit --no-fund || npm install -g opencode-ai --no-audit --no-fund || true; hash -r; (opencode --version || node \"\$(npm root -g)/opencode-termux/bin/opencode\" --version || echo failed) 2>&1\n"); })),
+      _toolCard('Troubleshooting / Install', [
+        _cmd('Network check','getent hosts registry.npmjs.org || ping -c1 1.1.1.1 || echo no-network'),
+        _cmd('Versions','node -v 2>&1; npm -v 2>&1; opencode --version 2>&1 || echo no-opencode'),
+        _cmd('Fix dpkg fully','dpkg --configure -a --force-confdef --force-confold --force-overwrite --force-unsafe-io || true; apt-get -o APT::Sandbox::User=root -f install -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold -o Dpkg::Options::=--force-overwrite -o Dpkg::Options::=--force-unsafe-io || true'),
+        _cmd('Install base apt','apt-get -o APT::Sandbox::User=root update && apt-get -o APT::Sandbox::User=root install -y --no-install-recommends ca-certificates curl git xz-utils tar nano'),
+        _cmd('Install Node binary','mkdir -p /tmp && curl -fL --retry 4 https://nodejs.org/dist/v20.18.0/node-v20.18.0-linux-arm64.tar.xz -o /tmp/node.tar.xz && tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 && node -v && npm -v'),
+        _cmd('Install OpenCode','export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; rm -rf /root/.npm-cache/_cacache/tmp || true; npm cache clean --force || true; npm install -g opencode-termux --no-audit --no-fund --cache /root/.npm-cache || npm install -g opencode-ai --no-audit --no-fund --cache /root/.npm-cache; NR=\$(npm root -g 2>/dev/null); for c in "\$NR/opencode-termux/bin/opencode" "\$NR/opencode-termux/bin/opencode.js" "\$NR/opencode-ai/bin/opencode" "\$NR/opencode-ai/bin/opencode.js"; do [ -f "\$c" ] && printf \'#!/bin/sh\\nexec "\$(command -v node)" "%s" "\$@"\\n\' "\$c" > /usr/local/bin/opencode && chmod +x /usr/local/bin/opencode && break; done; opencode --version 2>&1 || echo failed'),
+        _cmd('Run OpenCode server','export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; if command -v opencode >/dev/null 2>&1; then opencode web --port 4096 --hostname 127.0.0.1 --print-logs --log-level INFO --pure; else NR=\$(npm root -g 2>/dev/null); node "\$NR/opencode-termux/bin/opencode" web --port 4096 --hostname 127.0.0.1 --print-logs --log-level INFO --pure || node "\$NR/opencode-ai/bin/opencode" web --port 4096 --hostname 127.0.0.1 --print-logs --log-level INFO --pure; fi'),
       ]),
-      _toolCard('سیستم', [
+      _toolCard('System', [
         _cmd('uname/os','uname -a; echo; cat /etc/os-release 2>/dev/null | head -20'),
-        _cmd('فضای دیسک','df -h'),
-        _cmd('فرآیندها','ps aux 2>/dev/null | head -30 || ps -ef | head -30'),
+        _cmd('Disk space','df -h'),
+        _cmd('Processes','ps aux 2>/dev/null | head -30 || ps -ef | head -30'),
         _cmd('env','env | sort | head -50'),
       ]),
-      Card(child: ListTile(leading: const Icon(Icons.refresh), title: const Text('راه‌اندازی مجدد نشست سرویس'), onTap: _reload)),
-      Card(child: ListTile(leading: const Icon(Icons.copy_all), title: const Text('کپی همه لاگ‌ها'), onTap: _copyAllLogs)),
-    ]));
+      Card(child: ListTile(leading: const Icon(Icons.refresh), title: const Text('Restart service session'), onTap: _reload)),
+      Card(child: ListTile(leading: const Icon(Icons.copy_all), title: const Text('Copy all logs'), onTap: _copyAllLogs)),
+    ]);
   }
 
   Widget _toolCard(String title, List<Widget> chips) => Card(child: Padding(padding: const EdgeInsets.all(12), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(title, style: const TextStyle(fontWeight: FontWeight.bold)), const SizedBox(height:8), Wrap(spacing:8, runSpacing:8, children: chips)])));
   Widget _cmd(String label, String cmd) => ActionChip(label: Text(label), onPressed: () { setState(()=>_tabIndex=0); _sendToActive('$cmd\n'); });
 
   Widget _buildSettingsPage() {
-    return Directionality(textDirection: TextDirection.rtl, child: ListView(padding: const EdgeInsets.all(16), children: [
-      const Text('تنظیمات', style: TextStyle(fontSize:20,fontWeight: FontWeight.bold)), const SizedBox(height:12),
-      Card(child: SwitchListTile(title: const Text('جابجایی خودکار به OpenCode پس از آماده شدن'), value: _autoSwitchToWeb, onChanged: (v)=>setState(()=>_autoSwitchToWeb=v))),
-      Card(child: Padding(padding: const EdgeInsets.all(12), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text('اندازه فونت ترمینال: ${_fontSize.toStringAsFixed(0)}'), Slider(min:10,max:28,divisions:18,value:_fontSize,onChanged:(v)=>setState(()=>_fontSize=v))]))),
-      Card(child: ListTile(leading: const Icon(Icons.folder_open), title: const Text('تنظیمات مجوز فایل/حافظه'), onTap: () async { await openAppSettings(); })),
-      Card(child: ListTile(leading: const Icon(Icons.security), title: const Text('درخواست مجوز ذخیره‌سازی'), onTap: () async { await [Permission.storage, Permission.manageExternalStorage].request(); })),
-      Card(child: ListTile(leading: const Icon(Icons.refresh), title: const Text('راه‌اندازی مجدد نشست'), onTap: _reload)),
-      Card(child: ListTile(leading: const Icon(Icons.stop_circle_outlined), title: const Text('توقف سرویس'), onTap: () async { await _bridge.stopService(); })),
-      Card(child: ListTile(leading: const Icon(Icons.copy_all), title: const Text('کپی همه لاگ‌ها'), onTap: _copyAllLogs)),
-      const Card(child: Padding(padding: EdgeInsets.all(12), child: Text('نکات:\n• ترمینال سفارشی: همیشه چپ‌چین، اسکرول افقی/عمودی برای جلوگیری از تکه‌تکه شدن خطوط طولانی.\n• رفع خطاها بدون حذف داده: بوت‌استرپ در هر اجرا محیط موجود را تعمیر می‌کند (dpkg/apt/chown-wrapper، npm cache در مسیر پایدار، نصب OpenCode با تلاش مجدد) و rootfs را پاک نمی‌کند.\n• تب‌های ترمینال جدید نشست‌های واقعی جداگانه در محیط proot هستند.'))),
-    ]));
+    return ListView(padding: const EdgeInsets.all(16), children: [
+      const Text('Settings', style: TextStyle(fontSize:20,fontWeight: FontWeight.bold)), const SizedBox(height:12),
+      Card(child: SwitchListTile(title: const Text('Auto-switch to OpenCode when ready'), value: _autoSwitchToWeb, onChanged: (v)=>setState(()=>_autoSwitchToWeb=v))),
+      Card(child: ListTile(leading: const Icon(Icons.folder_open), title: const Text('Open file/storage permission settings'), onTap: () async { await openAppSettings(); })),
+      Card(child: ListTile(leading: const Icon(Icons.security), title: const Text('Request storage permissions'), onTap: () async { await [Permission.storage, Permission.manageExternalStorage].request(); })),
+      Card(child: ListTile(leading: const Icon(Icons.refresh), title: const Text('Restart session'), onTap: _reload)),
+      Card(child: ListTile(leading: const Icon(Icons.stop_circle_outlined), title: const Text('Stop service'), onTap: () async { await _bridge.stopService(); })),
+      Card(child: ListTile(leading: const Icon(Icons.copy_all), title: const Text('Copy all logs'), onTap: _copyAllLogs)),
+      const Card(child: Padding(padding: EdgeInsets.all(12), child: Text('Notes:\n• Terminal: uses Termux terminal-view/terminal-emulator (copied), left-aligned, wraps text, and shows the keyboard on tap.\n• Self-repair without data loss: bootstrap repairs the existing environment on each run (dpkg/apt wrappers, resilient npm cache, OpenCode install/retry/wrapper) and does not wipe rootfs.\n• New terminal tabs are separate real proot shell sessions.'))),
+    ]);
   }
 
   Widget _buildAboutPage() {
-    return Directionality(textDirection: TextDirection.rtl, child: ListView(padding: const EdgeInsets.all(16), children: const [
-      Text('درباره Andoco', style: TextStyle(fontSize:20,fontWeight: FontWeight.bold)), SizedBox(height:12),
-      Card(child: ListTile(title: Text('محیط'), subtitle: Text('Debian arm64 در proot + OpenCode Web'))),
-      Card(child: ListTile(title: Text('ترمینال سفارشی'), subtitle: Text('پیاده‌سازی داخلی (بدون کتابخانه xterm)، ANSI/SGR، اسکرول‌بک، ورودی تعاملی، تب‌های ترمینال جدید، کلیدهای میانبر و نمایش پایدار چپ‌چین.'))),
-      Card(child: ListTile(title: Text('امکانات'), subtitle: Text('پیشرفت زنده، وب‌ویو OpenCode، فایل‌اکسپلورر کامل، ابزارهای تعمیر/نصب، تنظیمات، کپی لاگ، دسترسی حافظه (مطابق مجوزها).'))),
-    ]));
+    return ListView(padding: const EdgeInsets.all(16), children: const [
+      Text('About Andoco', style: TextStyle(fontSize:20,fontWeight: FontWeight.bold)), SizedBox(height:12),
+      Card(child: ListTile(title: Text('Environment'), subtitle: Text('Debian arm64 in proot + OpenCode Web'))),
+      Card(child: ListTile(title: Text('Terminal'), subtitle: Text('Based on Termux terminal-view/terminal-emulator (copied): full ANSI, scrollback, interactive input, multiple tabs, left-aligned display.'))),
+      Card(child: ListTile(title: Text('Features'), subtitle: Text('Live progress, OpenCode web view, full file explorer, repair/install tools, settings, log copy, storage access (as permitted).'))),
+    ]);
   }
 }
 
 class _UiTermSession {
   final String id;
   final String title;
-  final TerminalEmulator emulator;
-  _UiTermSession({required this.id, required this.title, required this.emulator});
+  _UiTermSession({required this.id, required this.title});
 }
 
 class FileExplorerPage extends StatefulWidget {
@@ -353,47 +349,46 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
       String text; try { text = utf8.decode(bytes, allowMalformed: true); } catch (_) { text = bytes.map((b)=>b.toRadixString(16).padLeft(2,'0')).join(' '); }
       if (!mounted) return;
       showModalBottomSheet(context: context, isScrollControlled: true, builder: (ctx) {
-        return Directionality(textDirection: TextDirection.rtl, child: SafeArea(child: SizedBox(height: MediaQuery.of(ctx).size.height*0.85, child: Column(children: [
-          ListTile(title: Text(f.path, maxLines:2, overflow: TextOverflow.ellipsis), subtitle: Text('اندازه: ${stat.size} بایت${stat.size>max ? " (نمایش بخشی)" : ""}'), trailing: Wrap(children: [IconButton(icon: const Icon(Icons.copy), onPressed: () async { await Clipboard.setData(ClipboardData(text: text)); if(mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('کپی شد'))); }), IconButton(icon: const Icon(Icons.link), onPressed: () async { await Clipboard.setData(ClipboardData(text: f.path)); })])),
+        return SafeArea(child: SizedBox(height: MediaQuery.of(ctx).size.height*0.85, child: Column(children: [
+          ListTile(title: Text(f.path, maxLines:2, overflow: TextOverflow.ellipsis), subtitle: Text('Size: ${stat.size} bytes${stat.size>max ? " (partial view)" : ""}'), trailing: Wrap(children: [IconButton(icon: const Icon(Icons.copy), onPressed: () async { await Clipboard.setData(ClipboardData(text: text)); if(mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Copied'))); }), IconButton(icon: const Icon(Icons.link), onPressed: () async { await Clipboard.setData(ClipboardData(text: f.path)); })])),
           const Divider(height:1),
-          Expanded(child: SingleChildScrollView(padding: const EdgeInsets.all(12), child: Directionality(textDirection: _looksRtl(text)?TextDirection.rtl:TextDirection.ltr, child: SelectableText(text, style: const TextStyle(fontFamily:'monospace', fontSize:12))))),
-        ]))));
+          Expanded(child: SingleChildScrollView(padding: const EdgeInsets.all(12), child: SelectableText(text, style: const TextStyle(fontFamily:'monospace', fontSize:12)))) ,
+        ])));
       });
-    } catch (e) { if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('خطا: $e'))); }
+    } catch (e) { if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e'))); }
   }
 
-  Future<void> _jumpTo(String path) async { final d = Directory(path); if (await d.exists()) { setState((){_current=d; _query=''; _searchCtrl.clear();}); _refresh(); } else { if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('مسیر در دسترس نیست: $path'))); } }
-  Future<void> _deleteEntity(FileSystemEntity e) async { final ok = await showDialog<bool>(context: context, builder: (ctx)=>Directionality(textDirection: TextDirection.rtl, child: AlertDialog(title: const Text('حذف'), content: Text('حذف ${_nameOf(e)}؟'), actions:[TextButton(onPressed: ()=>Navigator.pop(ctx,false), child: const Text('لغو')), TextButton(onPressed: ()=>Navigator.pop(ctx,true), child: const Text('حذف'))]))); if (ok != true) return; try { await e.delete(recursive: e is Directory); _refresh(); } catch (err) { if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('خطا: $err'))); } }
-  Future<void> _renameEntity(FileSystemEntity e) async { final ctrl = TextEditingController(text: _nameOf(e)); final ok = await showDialog<bool>(context: context, builder: (ctx)=>Directionality(textDirection: TextDirection.rtl, child: AlertDialog(title: const Text('تغییر نام'), content: TextField(controller: ctrl), actions:[TextButton(onPressed: ()=>Navigator.pop(ctx,false), child: const Text('لغو')), TextButton(onPressed: ()=>Navigator.pop(ctx,true), child: const Text('تایید'))]))); if (ok != true || ctrl.text.trim().isEmpty) return; try { await e.rename('${_current.path}/${ctrl.text.trim()}'); _refresh(); } catch (err) { if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('خطا: $err'))); } }
-  Future<void> _createFolder() async { final c=TextEditingController(); final ok=await showDialog<bool>(context: context,builder:(ctx)=>Directionality(textDirection: TextDirection.rtl,child:AlertDialog(title: const Text('پوشه جدید'), content: TextField(controller:c), actions:[TextButton(onPressed:()=>Navigator.pop(ctx,false),child:const Text('لغو')),TextButton(onPressed:()=>Navigator.pop(ctx,true),child:const Text('ایجاد'))]))); if(ok==true && c.text.trim().isNotEmpty){ try{await Directory('${_current.path}/${c.text.trim()}').create(); _refresh();}catch(e){ if(mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('خطا: $e')));} } }
-  Future<void> _createFile() async { final c=TextEditingController(); final ok=await showDialog<bool>(context: context,builder:(ctx)=>Directionality(textDirection: TextDirection.rtl,child:AlertDialog(title: const Text('فایل جدید'), content: TextField(controller:c), actions:[TextButton(onPressed:()=>Navigator.pop(ctx,false),child:const Text('لغو')),TextButton(onPressed:()=>Navigator.pop(ctx,true),child:const Text('ایجاد'))]))); if(ok==true && c.text.trim().isNotEmpty){ try{await File('${_current.path}/${c.text.trim()}').create(); _refresh();}catch(e){ if(mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('خطا: $e')));} } }
+  Future<void> _jumpTo(String path) async { final d = Directory(path); if (await d.exists()) { setState((){_current=d; _query=''; _searchCtrl.clear();}); _refresh(); } else { if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Path not available: $path'))); } }
+  Future<void> _deleteEntity(FileSystemEntity e) async { final ok = await showDialog<bool>(context: context, builder: (ctx)=>AlertDialog(title: const Text('Delete'), content: Text('Delete ${_nameOf(e)}?'), actions:[TextButton(onPressed: ()=>Navigator.pop(ctx,false), child: const Text('Cancel')), TextButton(onPressed: ()=>Navigator.pop(ctx,true), child: const Text('Delete'))])); if (ok != true) return; try { await e.delete(recursive: e is Directory); _refresh(); } catch (err) { if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $err'))); } }
+  Future<void> _renameEntity(FileSystemEntity e) async { final ctrl = TextEditingController(text: _nameOf(e)); final ok = await showDialog<bool>(context: context, builder: (ctx)=>AlertDialog(title: const Text('Rename'), content: TextField(controller: ctrl), actions:[TextButton(onPressed: ()=>Navigator.pop(ctx,false), child: const Text('Cancel')), TextButton(onPressed: ()=>Navigator.pop(ctx,true), child: const Text('OK'))])); if (ok != true || ctrl.text.trim().isEmpty) return; try { await e.rename('${_current.path}/${ctrl.text.trim()}'); _refresh(); } catch (err) { if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $err'))); } }
+  Future<void> _createFolder() async { final c=TextEditingController(); final ok=await showDialog<bool>(context: context,builder:(ctx)=>AlertDialog(title: const Text('New folder'), content: TextField(controller:c), actions:[TextButton(onPressed:()=>Navigator.pop(ctx,false),child:const Text('Cancel')),TextButton(onPressed:()=>Navigator.pop(ctx,true),child:const Text('Create'))])); if(ok==true && c.text.trim().isNotEmpty){ try{await Directory('${_current.path}/${c.text.trim()}').create(); _refresh();}catch(e){ if(mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));} } }
+  Future<void> _createFile() async { final c=TextEditingController(); final ok=await showDialog<bool>(context: context,builder:(ctx)=>AlertDialog(title: const Text('New file'), content: TextField(controller:c), actions:[TextButton(onPressed:()=>Navigator.pop(ctx,false),child:const Text('Cancel')),TextButton(onPressed:()=>Navigator.pop(ctx,true),child:const Text('Create'))])); if(ok==true && c.text.trim().isNotEmpty){ try{await File('${_current.path}/${c.text.trim()}').create(); _refresh();}catch(e){ if(mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));} } }
 
   Future<void> _showEntryActions(FileSystemEntity e) async {
-    await showModalBottomSheet(context: context, builder: (ctx)=>SafeArea(child: Directionality(textDirection: TextDirection.rtl, child: Column(mainAxisSize: MainAxisSize.min, children: [
+    await showModalBottomSheet(context: context, builder: (ctx)=>SafeArea(child: Column(mainAxisSize: MainAxisSize.min, children: [
       ListTile(title: Text(_nameOf(e)), subtitle: Text(e.path, maxLines:2, overflow: TextOverflow.ellipsis)),
-      ListTile(leading: const Icon(Icons.copy), title: const Text('کپی مسیر'), onTap: () async { await Clipboard.setData(ClipboardData(text: e.path)); if(mounted) Navigator.pop(ctx); }),
-      if (e is File) ListTile(leading: const Icon(Icons.open_in_new), title: const Text('مشاهده'), onTap: (){ Navigator.pop(ctx); _openFile(e); }),
-      if (e is Directory) ListTile(leading: const Icon(Icons.folder_open), title: const Text('باز کردن'), onTap: (){ Navigator.pop(ctx); _openEntity(e); }),
-      ListTile(leading: const Icon(Icons.drive_file_rename_outline), title: const Text('تغییر نام'), onTap: (){ Navigator.pop(ctx); _renameEntity(e); }),
-      ListTile(leading: const Icon(Icons.info_outline), title: const Text('اطلاعات'), onTap: () async { try { final st = await e.stat(); if(!mounted) return; Navigator.pop(ctx); showDialog(context: context, builder: (dctx)=>Directionality(textDirection: TextDirection.rtl, child: AlertDialog(title: const Text('اطلاعات'), content: SelectableText('مسیر: ${e.path}\nنوع: ${st.type}\nاندازه: ${st.size}\nتغییر: ${st.modified}\nدسترسی: ${st.modeString()}'), actions:[TextButton(onPressed: ()=>Navigator.pop(dctx), child: const Text('بستن'))]))); } catch(_) { if(mounted) Navigator.pop(ctx);} }),
-      ListTile(leading: const Icon(Icons.delete_outline), title: const Text('حذف'), onTap: (){ Navigator.pop(ctx); _deleteEntity(e); }),
-    ]))));
+      ListTile(leading: const Icon(Icons.copy), title: const Text('Copy path'), onTap: () async { await Clipboard.setData(ClipboardData(text: e.path)); if(mounted) Navigator.pop(ctx); }),
+      if (e is File) ListTile(leading: const Icon(Icons.open_in_new), title: const Text('View'), onTap: (){ Navigator.pop(ctx); _openFile(e); }),
+      if (e is Directory) ListTile(leading: const Icon(Icons.folder_open), title: const Text('Open'), onTap: (){ Navigator.pop(ctx); _openEntity(e); }),
+      ListTile(leading: const Icon(Icons.drive_file_rename_outline), title: const Text('Rename'), onTap: (){ Navigator.pop(ctx); _renameEntity(e); }),
+      ListTile(leading: const Icon(Icons.info_outline), title: const Text('Info'), onTap: () async { try { final st = await e.stat(); if(!mounted) return; Navigator.pop(ctx); showDialog(context: context, builder: (dctx)=>AlertDialog(title: const Text('Info'), content: SelectableText('Path: ${e.path}\nType: ${st.type}\nSize: ${st.size}\nModified: ${st.modified}\nMode: ${st.modeString()}'), actions:[TextButton(onPressed: ()=>Navigator.pop(dctx), child: const Text('Close'))])); } catch(_) { if(mounted) Navigator.pop(ctx);} }),
+      ListTile(leading: const Icon(Icons.delete_outline), title: const Text('Delete'), onTap: (){ Navigator.pop(ctx); _deleteEntity(e); }),
+    ])));
   }
 
   @override
   Widget build(BuildContext context) {
-    return Directionality(textDirection: TextDirection.rtl, child: Column(children: [
+    return Column(children: [
       Material(color: Theme.of(context).colorScheme.surfaceContainer, child: Padding(padding: const EdgeInsets.symmetric(horizontal:8, vertical:6), child: Column(children: [
-        Row(children: [IconButton(icon: const Icon(Icons.arrow_upward), onPressed:_goUp), IconButton(icon: const Icon(Icons.refresh), onPressed:_refresh), IconButton(icon: Icon(_showHidden?Icons.visibility_off:Icons.visibility), onPressed:(){ setState(()=>_showHidden=!_showHidden); _refresh(); }), IconButton(icon: const Icon(Icons.create_new_folder), onPressed:_createFolder), IconButton(icon: const Icon(Icons.note_add), onPressed:_createFile), const Spacer(), IconButton(icon: const Icon(Icons.terminal), onPressed: widget.onOpenTerminal)]),
-        SingleChildScrollView(scrollDirection: Axis.horizontal, child: Row(children: [for (final p in ['/sdcard','/storage/emulated/0','/storage','/data/data/com.andoco.app','/data/data/com.andoco.app/files','/']) Padding(padding: const EdgeInsets.only(left:6), child: ActionChip(label: Text(p), onPressed: ()=>_jumpTo(p)))])),
-        const SizedBox(height:6), TextField(controller: _searchCtrl, decoration: const InputDecoration(isDense:true, prefixIcon: Icon(Icons.search), hintText:'جستجو...', border: OutlineInputBorder()), onChanged: (v){ _query=v; _refresh(); }), const SizedBox(height:4),
-        Align(alignment: Alignment.centerRight, child: SelectableText(_current.path, style: const TextStyle(fontFamily:'monospace', fontSize:12))),
+        Row(children: [IconButton(icon: const Icon(Icons.arrow_upward), tooltip: 'Up', onPressed:_goUp), IconButton(icon: const Icon(Icons.refresh), tooltip: 'Refresh', onPressed:_refresh), IconButton(icon: Icon(_showHidden?Icons.visibility_off:Icons.visibility), tooltip: 'Toggle hidden', onPressed:(){ setState(()=>_showHidden=!_showHidden); _refresh(); }), IconButton(icon: const Icon(Icons.create_new_folder), tooltip: 'New folder', onPressed:_createFolder), IconButton(icon: const Icon(Icons.note_add), tooltip: 'New file', onPressed:_createFile), const Spacer(), IconButton(icon: const Icon(Icons.terminal), tooltip: 'Terminal', onPressed: widget.onOpenTerminal)]),
+        SingleChildScrollView(scrollDirection: Axis.horizontal, child: Row(children: [for (final p in ['/sdcard','/storage/emulated/0','/storage','/data/data/com.andoco.app','/data/data/com.andoco.app/files','/']) Padding(padding: const EdgeInsets.only(right:6), child: ActionChip(label: Text(p), onPressed: ()=>_jumpTo(p)))])),
+        const SizedBox(height:6), TextField(controller: _searchCtrl, decoration: const InputDecoration(isDense:true, prefixIcon: Icon(Icons.search), hintText:'Search...', border: OutlineInputBorder()), onChanged: (v){ _query=v; _refresh(); }), const SizedBox(height:4),
+        Align(alignment: Alignment.centerLeft, child: SelectableText(_current.path, style: const TextStyle(fontFamily:'monospace', fontSize:12))),
       ]))),
       const Divider(height:1),
-      Expanded(child: _loading ? const Center(child:CircularProgressIndicator()) : _error!=null ? Center(child: Padding(padding: const EdgeInsets.all(16), child: Text('خطا/عدم دسترسی: $_error\n\nممکن است نیاز به اعطای مجوز فایل از تنظیمات سیستم باشد.', textAlign: TextAlign.center))) : _entries.isEmpty ? const Center(child: Text('موردی برای نمایش نیست')) : ListView.builder(itemCount: _entries.length, itemBuilder: (context,i){ final e=_entries[i]; final isDir=e is Directory; final name=_nameOf(e); return ListTile(leading: Icon(isDir?Icons.folder:Icons.insert_drive_file), title: Text(name, textDirection: _looksRtl(name)?TextDirection.rtl:TextDirection.ltr), subtitle: Text(isDir?'پوشه':_fileSubtitle(e), style: const TextStyle(fontSize:11)), onTap: ()=>_openEntity(e), onLongPress: ()=>_showEntryActions(e), trailing: IconButton(icon: const Icon(Icons.more_vert), onPressed: ()=>_showEntryActions(e))); })),
-    ]));
+      Expanded(child: _loading ? const Center(child:CircularProgressIndicator()) : _error!=null ? Center(child: Padding(padding: const EdgeInsets.all(16), child: Text('Error / access denied: $_error\n\nYou may need to grant file permissions in system settings.', textAlign: TextAlign.center))) : _entries.isEmpty ? const Center(child: Text('No items')) : ListView.builder(itemCount: _entries.length, itemBuilder: (context,i){ final e=_entries[i]; final isDir=e is Directory; final name=_nameOf(e); return ListTile(leading: Icon(isDir?Icons.folder:Icons.insert_drive_file), title: Text(name), subtitle: Text(isDir?'Folder':_fileSubtitle(e), style: const TextStyle(fontSize:11)), onTap: ()=>_openEntity(e), onLongPress: ()=>_showEntryActions(e), trailing: IconButton(icon: const Icon(Icons.more_vert), onPressed: ()=>_showEntryActions(e))); })),
+    ]);
   }
 
-  bool _looksRtl(String s){ for(final r in s.runes){ if((r>=0x0600&&r<=0x06FF)||(r>=0x0750&&r<=0x077F)||(r>=0xFB50&&r<=0xFDFF)||(r>=0xFE70&&r<=0xFEFF)) return true; } return false; }
-  String _fileSubtitle(FileSystemEntity e){ try{ final st=e.statSync(); return st.size>=1024*1024 ? '${(st.size/(1024*1024)).toStringAsFixed(2)} MB' : '${(st.size/1024).toStringAsFixed(1)} KB'; }catch(_){ return 'فایل'; } }
+  String _fileSubtitle(FileSystemEntity e){ try{ final st=e.statSync(); return st.size>=1024*1024 ? '${(st.size/(1024*1024)).toStringAsFixed(2)} MB' : '${(st.size/1024).toStringAsFixed(1)} KB'; }catch(_){ return 'File'; } }
 }

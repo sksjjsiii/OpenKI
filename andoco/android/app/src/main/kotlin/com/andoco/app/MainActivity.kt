@@ -15,6 +15,11 @@ class MainActivity : FlutterActivity() {
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
 
+        flutterEngine
+            .platformViewsController
+            .registry
+            .registerViewFactory("termux-terminal", TermuxTerminalViewFactory(flutterEngine.dartExecutor.binaryMessenger))
+
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, methodChannelName)
             .setMethodCallHandler { call, result ->
                 when (call.method) {
