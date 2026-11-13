@@ -227,12 +227,12 @@ class OpencodeService : Service() {
             val localSbin = File(rootfs, "usr/local/sbin"); localSbin.mkdirs()
             val noop = "#!/bin/sh\nexit 0\n"
             for (d in listOf(localBin, localSbin)) {
-                for (name in listOf("chown", "chgrp", "dpkg-statoverride", "install-info")) {
+                for (name in listOf("chown", "chgrp", "dpkg-statoverride", "install-info", "ldconfig", "ldconfig.real", "start-stop-daemon")) {
                     writeExecutable(File(d, name), noop)
                 }
             }
             // also place noop wrappers in common system paths if writable (helps dpkg maintainer scripts)
-            for (path in listOf("bin/chown", "bin/chgrp", "usr/bin/chown", "usr/bin/chgrp", "usr/sbin/dpkg-statoverride", "usr/bin/dpkg-statoverride", "usr/bin/install-info")) {
+            for (path in listOf("bin/chown", "bin/chgrp", "usr/bin/chown", "usr/bin/chgrp", "usr/sbin/dpkg-statoverride", "usr/bin/dpkg-statoverride", "usr/bin/install-info", "sbin/ldconfig", "usr/sbin/ldconfig", "sbin/ldconfig.real", "usr/sbin/start-stop-daemon", "sbin/start-stop-daemon")) {
                 val f = File(rootfs, path)
                 try {
                     if (f.exists() || f.parentFile?.exists() == true) {
@@ -261,7 +261,14 @@ class OpencodeService : Service() {
             try { File(rootfs, "var/tmp").mkdirs(); Os.chmod(File(rootfs, "var/tmp").path, 0b111111111) } catch (_: Exception) {}
             try { File(rootfs, "usr/bin/perlthanks.dpkg-new").apply { parentFile?.mkdirs(); createNewFile() } } catch (_: Exception) {}
             try { File(rootfs, "usr/bin/perlbug.dpkg-new").apply { parentFile?.mkdirs(); createNewFile() } } catch (_: Exception) {}
-            try { File(rootfs, "var/lib").mkdirs(); File(rootfs, "var/lib/.andoco_fixes").writeText("3") } catch (_: Exception) {}
+            try { File(rootfs, "var/cache/apt/archives/partial").mkdirs() } catch (_: Exception) {}
+            // remove stale dpkg-new files
+            try {
+                rootfs.walkTopDown().maxDepth(7).forEach { f ->
+                    if (f.isFile && f.name.endsWith(".dpkg-new")) try { f.delete() } catch (_: Exception) {}
+                }
+            } catch (_: Exception) {}
+            try { File(rootfs, "var/lib/.andoco_fixes").writeText("5") } catch (_: Exception) {}
         } catch (e: Exception) { emit("[warn] proot fixes failed: ${e.message}") }
     }
 
@@ -499,7 +506,7 @@ set +m 2>/dev/null || true
 echo '[status] Checking and repairing environment (without deleting data)...'
 mkdir -p /etc/apt/apt.conf.d /etc/dpkg/dpkg.cfg.d /var/lib/dpkg/updates /var/lib/dpkg/info /var/lib/dpkg/triggers /tmp /var/tmp /root/.npm-cache || true
 chmod 1777 /tmp /var/tmp 2>/dev/null || true
-printf 'APT::Sandbox::User "root";\nAcquire::Retries "6";\nAcquire::http::Timeout "20";\nAcquire::https::Timeout "20";\nDpkg::Options { "--force-confdef"; "--force-confold"; "--force-overwrite"; "--force-unsafe-io"; };\n' > /etc/apt/apt.conf.d/99andoco || true
+printf 'APT::Sandbox::User "root";\nAcquire::Retries "6";\nAcquire::http::Timeout "20";\nAcquire::https::Timeout "30";\nDpkg::Options { "--force-confdef"; "--force-confold"; "--force-overwrite"; "--force-unsafe-io"; };\n' > /etc/apt/apt.conf.d/99andoco || true
 printf 'force-confdef\nforce-confold\nforce-overwrite\nforce-unsafe-io\nno-debsig\n' > /etc/dpkg/dpkg.cfg.d/99andoco || true
 
 for d in /usr/local/sbin /usr/local/bin; do

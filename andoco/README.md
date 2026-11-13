@@ -21,7 +21,7 @@ Flutter Android app (`com.andoco.app`, arm64-v8a) that runs [OpenCode](https://o
 2. If `filesDir/rootfs/.bootstrapped` is missing, `proot` runs:
    - `apt-get update`
    - `apt-get install -y --no-install-recommends nodejs npm curl git ca-certificates`
-   - `npm install -g opencode-termux`
+   - `npm install -g opencode-termux` (with fallback to `opencode-ai` and proot-safe dpkg/perl repair)
    - creates `/.bootstrapped`
 3. `proot` starts OpenCode:
    - `opencode web --port 4096 --hostname 127.0.0.1 --print-logs --log-level INFO --pure`
