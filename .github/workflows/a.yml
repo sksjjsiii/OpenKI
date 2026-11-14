@@ -36,7 +36,6 @@ jobs:
           cd termux-generator
           mkdir -p termux-apps-main
           git clone --depth 1 https://github.com/termux/termux-app.git termux-apps-main/termux-app
-          
           ./build-termux.sh \
             --name com.andoco.app \
             --architectures aarch64 \
@@ -57,43 +56,38 @@ jobs:
           PKG_PATH="$SRC/app/src/main/java/com/andoco/app/webview"
           mkdir -p "$PKG_PATH"
           
-          # کپی فایل جاوا از مخزن خودمان به سورس ترموکس
           cp "${{ github.workspace }}/source/WebViewActivity.java" "$PKG_PATH/WebViewActivity.java"
 
-          # ثبت Activity در Manifest و فعال‌سازی Cleartext
           MANIFEST="$SRC/app/src/main/AndroidManifest.xml"
           sed -i 's/<application /<application android:usesCleartextTraffic="true" /' "$MANIFEST"
-          
-          # استفاده از تم تمام‌صفحه برای این Activity
           sed -i 's/<\/application>/<activity android:name="com.andoco.app.webview.WebViewActivity" android:exported="true" android:theme="@android:style\/Theme.NoTitleBar.Fullscreen" \/>\n<\/application>/' "$MANIFEST"
 
-          # اضافه کردن دکمه به منو
           MENU_FILE="$SRC/app/src/main/res/menu/main.xml"
           if [ -f "$MENU_FILE" ]; then
             sed -i 's/<\/menu>/<item android:id="@+id\/action_webview" android:title="OpenCode Web" android:showAsAction="never" \/>\n<\/menu>/' "$MENU_FILE"
           fi
 
-          # تزریق کد به TermuxActivity.java
+          # پیدا کردن فایل TermuxActivity.java
           ACTIVITY_FILE=$(find "$SRC" -name "TermuxActivity.java" | head -1)
+          
+          # اضافه کردن import به بالای فایل
           if [ -f "$ACTIVITY_FILE" ]; then
             sed -i 's/import android.os.Bundle;/import android.os.Bundle;\nimport com.andoco.app.webview.WebViewActivity;/' "$ACTIVITY_FILE"
             
-            if grep -q "onOptionsItemSelected" "$ACTIVITY_FILE"; then
-              sed -i 's/public boolean onOptionsItemSelected(MenuItem item) {/public boolean onOptionsItemSelected(MenuItem item) {\n        if (item.getItemId() == R.id.action_webview) {\n            startActivity(new Intent(this, WebViewActivity.class));\n            return true;\n        }/' "$ACTIVITY_FILE"
-            else
+            # اگر متد onOptionsItemSelected وجود نداشت، آن را به انتهای کلاس اضافه کن
+            if ! grep -q "onOptionsItemSelected" "$ACTIVITY_FILE"; then
+              # حذف آکولاد بسته انتهایی
               sed -i '$ d' "$ACTIVITY_FILE"
-              cat >> "$ACTIVITY_FILE" << 'EOF'
-
-    @Override
-    public boolean onOptionsItemSelected(android.view.MenuItem item) {
-        if (item.getItemId() == R.id.action_webview) {
-            startActivity(new android.content.Intent(this, com.andoco.app.webview.WebViewActivity.class));
-            return true;
-        }
-        return super.onOptionsItemSelected(item);
-    }
-}
-EOF
+              # با استفاده از echo به جای heredoc برای جلوگیری از خطای YAML
+              echo '    @Override' >> "$ACTIVITY_FILE"
+              echo '    public boolean onOptionsItemSelected(android.view.MenuItem item) {' >> "$ACTIVITY_FILE"
+              echo '        if (item.getItemId() == R.id.action_webview) {' >> "$ACTIVITY_FILE"
+              echo '            startActivity(new android.content.Intent(this, com.andoco.app.webview.WebViewActivity.class));' >> "$ACTIVITY_FILE"
+              echo '            return true;' >> "$ACTIVITY_FILE"
+              echo '        }' >> "$ACTIVITY_FILE"
+              echo '        return super.onOptionsItemSelected(item);' >> "$ACTIVITY_FILE"
+              echo '    }' >> "$ACTIVITY_FILE"
+              echo '}' >> "$ACTIVITY_FILE"
             fi
           fi
 
