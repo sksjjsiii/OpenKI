@@ -73,15 +73,11 @@ jobs:
           # 3.2. تعریف شناسه جدید برای آیتم منو
           sed -i 's/private static final int CONTEXT_MENU_REPORT_ID = 9;/private static final int CONTEXT_MENU_REPORT_ID = 9;\n    private static final int CONTEXT_MENU_OPENCODE_WEB_ID = 12;/' "$ACTIVITY_FILE"
 
-          # 3.3. اضافه کردن آیتم به منوی زمینه (onCreateContextMenu)
-          # این کار آیتم را در انتهای منو اضافه می‌کند
+          # 3.3. اضافه کردن آیتم به منوی زمینه
           sed -i 's/menu.add(Menu.NONE, CONTEXT_MENU_REPORT_ID, Menu.NONE, R.string.action_report_issue);/menu.add(Menu.NONE, CONTEXT_MENU_REPORT_ID, Menu.NONE, R.string.action_report_issue);\n        menu.add(Menu.NONE, CONTEXT_MENU_OPENCODE_WEB_ID, Menu.NONE, "OpenCode Web");/' "$ACTIVITY_FILE"
 
-          # 3.4. مدیریت کلیک روی آیتم جدید (onContextItemSelected)
-          # این کد را بعد از case مربوط به REPORT_ID اضافه می‌کنیم
-          sed -i 's/case CONTEXT_MENU_REPORT_ID:/case CONTEXT_MENU_REPORT_ID:/' "$ACTIVITY_FILE" # فقط برای اطمینان از وجود
-          sed -i '/case CONTEXT_MENU_REPORT_ID:/a \ \ \ \ \ \ \ \ \ \ \ \ case CONTEXT_MENU_OPENCODE_WEB_ID:\n                startActivity(new Intent(this, WebViewActivity.class));\n                return true;' "$ACTIVITY_FILE"
-
+          # 3.4. جایگزینی کیس گزارش با کیس جدید + کیس گزارش (روش ایمن برای جلوگیری از خطای unreachable)
+          sed -i 's/case CONTEXT_MENU_REPORT_ID:/case CONTEXT_MENU_OPENCODE_WEB_ID:\n                startActivity(new Intent(this, WebViewActivity.class));\n                return true;\n            case CONTEXT_MENU_REPORT_ID:/' "$ACTIVITY_FILE"
 
       - name: Rebuild APK with WebView
         run: |
