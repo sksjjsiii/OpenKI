@@ -81,12 +81,10 @@ jobs:
           PKG_PATH="$SRC/app/src/main/java/com/andoco/app/webview"
           mkdir -p "$PKG_PATH"
 
-          # کپی فایل WebViewActivity.java
           if [ -f "/tmp/backup/WebViewActivity.java" ]; then
             cp /tmp/backup/WebViewActivity.java "$PKG_PATH/WebViewActivity.java"
           fi
 
-          # بازنویسی فایل network_security_config.xml
           XML_FILE="$SRC/app/src/main/res/xml/network_security_config.xml"
           if [ -f "$XML_FILE" ]; then
             echo '<?xml version="1.0" encoding="utf-8"?>' > "$XML_FILE"
@@ -99,12 +97,10 @@ jobs:
             echo '</network-security-config>' >> "$XML_FILE"
           fi
 
-          # تزریق به Manifest
           MANIFEST="$SRC/app/src/main/AndroidManifest.xml"
           sed -i 's/<application /<application android:usesCleartextTraffic="true" /' "$MANIFEST"
           sed -i 's/<\/application>/<activity android:name="com.andoco.app.webview.WebViewActivity" android:exported="true" android:theme="@android:style\/Theme.NoTitleBar.Fullscreen" \/>\n<\/application>/' "$MANIFEST"
 
-          # تزریق کد به TermuxActivity.java
           ACTIVITY_FILE="$SRC/app/src/main/java/com/termux/app/TermuxActivity.java"
           sed -i 's/import android.os.Bundle;/import android.os.Bundle;\nimport com.andoco.app.webview.WebViewActivity;/' "$ACTIVITY_FILE"
           sed -i 's/private static final int CONTEXT_MENU_REPORT_ID = 9;/private static final int CONTEXT_MENU_REPORT_ID = 9;\n    private static final int CONTEXT_MENU_OPENCODE_WEB_ID = 12;/' "$ACTIVITY_FILE"
@@ -118,7 +114,7 @@ jobs:
           chmod +x ./gradlew
           ./gradlew assembleDebug --stacktrace
 
-      # 8. کپی سورس به پوشه source و پوش به مخزن
+      # 8. کپی سورس (بدون فایل‌های build) و پوش
       - name: Save Source to Repository and Push
         run: |
           mkdir -p source
@@ -127,18 +123,37 @@ jobs:
             cp /tmp/backup/WebViewActivity.java source/WebViewActivity.java
           fi
 
-          cp -r termux-generator/termux-apps-main/termux-app/* source/
+          # کپی کردن سورس ترموکس با استفاده از rsync (برای نادیده گرفتن پوشه‌های build)
+          # اگر rsync نیست، از find و cp استفاده می‌کنیم
+          if command -v rsync &> /dev/null; then
+            rsync -av --exclude='build/' --exclude='.gradle/' --exclude='.cxx/' --exclude='*.apk' --exclude='*.aar' \
+              termux-generator/termux-apps-main/termux-app/ source/
+          else
+            # روش جایگزین: کپی و سپس حذف پوشه‌های حجیم
+            cp -r termux-generator/termux-apps-main/termux-app/* source/
+            find source -type d -name 'build' -exec rm -rf {} +
+            find source -type d -name '.gradle' -exec rm -rf {} +
+            find source -type d -name '.cxx' -exec rm -rf {} +
+            find source -type f -name '*.apk' -delete
+            find source -type f -name '*.aar' -delete
+          fi
 
-          # پیکربندی گیت
+          # اضافه کردن فایل .gitignore برای جلوگیری از کامیت شدن پوشه‌های build در آینده
+          cat > source/.gitignore << 'EOF'
+          build/
+          .gradle/
+          .cxx/
+          *.apk
+          *.aar
+          *.jar
+          local.properties
+          EOF
+
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          
+
           git add -A
-          
-          git commit -m "Auto-save updated Termux source with WebView [skip ci]" || echo "No changes to commit"
-          
-          # اطمینان از اتصال به ریموت
-          git remote -v
+          git commit -m "Auto-save updated Termux source with WebView (excluding build artifacts) [skip ci]" || echo "No changes to commit"
           git push origin HEAD:${{ github.ref_name }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
