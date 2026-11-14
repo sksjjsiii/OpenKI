@@ -61,7 +61,6 @@ jobs:
 
           # 2. ثبت Activity در Manifest و تزریق usesCleartextTraffic
           MANIFEST="$SRC/app/src/main/AndroidManifest.xml"
-          # استفاده از sed برای جایگزینی دقیق تگ application
           sed -i 's/<application /<application android:usesCleartextTraffic="true" /' "$MANIFEST"
           sed -i 's/<\/application>/<activity android:name="com.andoco.app.webview.WebViewActivity" android:exported="true" android:theme="@android:style\/Theme.NoTitleBar.Fullscreen" \/>\n<\/application>/' "$MANIFEST"
 
@@ -79,11 +78,11 @@ jobs:
           chmod +x ./gradlew
           ./gradlew assembleDebug --stacktrace
 
-      - name: Upload APK Artifact
+      - name: Upload Specific APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Andoco-Debug-APK
-          path: 'termux-generator/termux-apps-main/termux-app/app/build/outputs/apk/debug/*.apk'
-          # 【تغییر مهم】ذخیره فایل به صورت جداگانه، نه داخل ZIP
+          name: Andoco-APK
+          # دقیقاً همان فایلی که می‌خواهی
+          path: 'termux-generator/termux-apps-main/termux-app/app/build/outputs/apk/debug/termux-app_apt-android-7-debug_arm64-v8a.apk'
           archive: false
           if-no-files-found: error
