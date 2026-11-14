@@ -34,10 +34,11 @@ jobs:
       - name: Generate Termux Source with Custom Package Name
         run: |
           cd termux-generator
-          # 【关键修复】预先创建空的 termux-apps-main 目录
+          # 关键修复：脚本依赖 termux-apps-main/termux-app 目录，我们提前创建好并克隆源码
           mkdir -p termux-apps-main
+          git clone --depth 1 https://github.com/termux/termux-app.git termux-apps-main/termux-app
           
-          # 完全交由脚本自行管理所有依赖仓库的克隆
+          # 现在运行脚本，它会直接使用已存在的源码
           ./build-termux.sh \
             --name com.andoco.app \
             --architectures aarch64 \
@@ -58,12 +59,7 @@ jobs:
           cd termux-generator
           TERMUX_SRC="termux-apps-main/termux-app"
           if [ ! -d "$TERMUX_SRC" ]; then
-            echo "Termux source directory not found at expected path: $TERMUX_SRC"
-            # 备用搜索
-            TERMUX_SRC=$(find . -maxdepth 4 -type d -name "termux-app" | head -1)
-          fi
-          if [ -z "$TERMUX_SRC" ]; then
-            echo "Could not locate generated Termux source."
+            echo "Termux source not found at $TERMUX_SRC"
             exit 1
           fi
           echo "TERMUX_SRC=$TERMUX_SRC" >> $GITHUB_ENV
@@ -112,7 +108,7 @@ jobs:
           fi
 
           # 4. 在 TermuxActivity 中处理菜单点击事件
-          ACTIVITY_FILE=$(find "$SRC" -name "TermuxActivity.java" | head -1)
+          ACTIVITY_FILE="$SRC/app/src/main/java/com/termux/app/TermuxActivity.java"
           if [ -f "$ACTIVITY_FILE" ]; then
             sed -i 's/import android.os.Bundle;/import android.os.Bundle;\nimport com.andoco.app.webview.WebViewActivity;/' "$ACTIVITY_FILE"
             sed -i 's/public boolean onMenuItemClick(MenuItem item) {/public boolean onMenuItemClick(MenuItem item) {\n        if (item.getItemId() == R.id.action_webview) {\n            startActivity(new Intent(this, WebViewActivity.class));\n            return true;\n        }/' "$ACTIVITY_FILE"
