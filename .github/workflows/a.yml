@@ -16,20 +16,22 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # 2. کپی موقت فایل WebViewActivity.java به خارج از مخزن (برای حفظ آن)
+      # 2. کپی موقت فایل WebViewActivity.java به خارج از مخزن
       - name: Backup WebViewActivity
         run: |
           mkdir -p /tmp/backup
           if [ -f "source/WebViewActivity.java" ]; then
             cp source/WebViewActivity.java /tmp/backup/WebViewActivity.java
-          else
-            echo "Warning: source/WebViewActivity.java not found in repository"
           fi
 
-      # 3. پاکسازی مخزن (به جز .github)
-      - name: Clean repository (keep only .github)
+      # 3. پاکسازی مخزن (به جز .github و .git)
+      - name: Clean repository (keep only .github and .git)
         run: |
-          find . -maxdepth 1 -not -name '.github' -not -name '.' -exec rm -rf {} +
+          find . -maxdepth 1 \
+            -not -name '.github' \
+            -not -name '.git' \
+            -not -name '.' \
+            -exec rm -rf {} +
           ls -la
 
       # 4. نصب پیش‌نیازها
@@ -79,19 +81,9 @@ jobs:
           PKG_PATH="$SRC/app/src/main/java/com/andoco/app/webview"
           mkdir -p "$PKG_PATH"
 
-          # کپی فایل WebViewActivity.java از بکاپ
+          # کپی فایل WebViewActivity.java
           if [ -f "/tmp/backup/WebViewActivity.java" ]; then
             cp /tmp/backup/WebViewActivity.java "$PKG_PATH/WebViewActivity.java"
-          else
-            # اگر فایل در مخزن نبود، یک نسخه ساده ایجاد می‌کنیم
-            echo "Warning: WebViewActivity.java not found in backup. Creating a basic version."
-            echo 'package com.andoco.app.webview;' > "$PKG_PATH/WebViewActivity.java"
-            echo 'import android.app.Activity;' >> "$PKG_PATH/WebViewActivity.java"
-            echo 'import android.os.Bundle;' >> "$PKG_PATH/WebViewActivity.java"
-            echo 'import android.webkit.WebView;' >> "$PKG_PATH/WebViewActivity.java"
-            echo 'public class WebViewActivity extends Activity {' >> "$PKG_PATH/WebViewActivity.java"
-            echo '    @Override protected void onCreate(Bundle b) { super.onCreate(b); WebView w = new WebView(this); w.getSettings().setJavaScriptEnabled(true); w.loadUrl("http://127.0.0.1:4096"); setContentView(w); }' >> "$PKG_PATH/WebViewActivity.java"
-            echo '}' >> "$PKG_PATH/WebViewActivity.java"
           fi
 
           # بازنویسی فایل network_security_config.xml
@@ -126,31 +118,28 @@ jobs:
           chmod +x ./gradlew
           ./gradlew assembleDebug --stacktrace
 
-      # 8. کپی سورس به پوشه source در ریشه مخزن و کامیت/پوش
+      # 8. کپی سورس به پوشه source و پوش به مخزن
       - name: Save Source to Repository and Push
         run: |
-          # ایجاد مجدد پوشه source
           mkdir -p source
-          
-          # کپی کردن فایل WebViewActivity.java (هم از بکاپ و هم از سورس)
+
           if [ -f "/tmp/backup/WebViewActivity.java" ]; then
             cp /tmp/backup/WebViewActivity.java source/WebViewActivity.java
           fi
 
-          # کپی کردن سورس ترموکس به پوشه source
           cp -r termux-generator/termux-apps-main/termux-app/* source/
 
           # پیکربندی گیت
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           
-          # اضافه کردن همه فایل‌ها (به جز .github)
-          git add source/
-          git add .
+          git add -A
           
-          # کامیت و پوش
           git commit -m "Auto-save updated Termux source with WebView [skip ci]" || echo "No changes to commit"
-          git push
+          
+          # اطمینان از اتصال به ریموت
+          git remote -v
+          git push origin HEAD:${{ github.ref_name }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
