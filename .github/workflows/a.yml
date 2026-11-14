@@ -56,40 +56,32 @@ jobs:
           PKG_PATH="$SRC/app/src/main/java/com/andoco/app/webview"
           mkdir -p "$PKG_PATH"
           
+          # 1. کپی فایل WebViewActivity.java
           cp "${{ github.workspace }}/source/WebViewActivity.java" "$PKG_PATH/WebViewActivity.java"
 
+          # 2. ثبت Activity در Manifest
           MANIFEST="$SRC/app/src/main/AndroidManifest.xml"
           sed -i 's/<application /<application android:usesCleartextTraffic="true" /' "$MANIFEST"
           sed -i 's/<\/application>/<activity android:name="com.andoco.app.webview.WebViewActivity" android:exported="true" android:theme="@android:style\/Theme.NoTitleBar.Fullscreen" \/>\n<\/application>/' "$MANIFEST"
 
-          MENU_FILE="$SRC/app/src/main/res/menu/main.xml"
-          if [ -f "$MENU_FILE" ]; then
-            sed -i 's/<\/menu>/<item android:id="@+id\/action_webview" android:title="OpenCode Web" android:showAsAction="never" \/>\n<\/menu>/' "$MENU_FILE"
-          fi
+          # 3. تزریق کد به TermuxActivity.java
+          ACTIVITY_FILE="$SRC/app/src/main/java/com/termux/app/TermuxActivity.java"
 
-          # پیدا کردن فایل TermuxActivity.java
-          ACTIVITY_FILE=$(find "$SRC" -name "TermuxActivity.java" | head -1)
-          
-          # اضافه کردن import به بالای فایل
-          if [ -f "$ACTIVITY_FILE" ]; then
-            sed -i 's/import android.os.Bundle;/import android.os.Bundle;\nimport com.andoco.app.webview.WebViewActivity;/' "$ACTIVITY_FILE"
-            
-            # اگر متد onOptionsItemSelected وجود نداشت، آن را به انتهای کلاس اضافه کن
-            if ! grep -q "onOptionsItemSelected" "$ACTIVITY_FILE"; then
-              # حذف آکولاد بسته انتهایی
-              sed -i '$ d' "$ACTIVITY_FILE"
-              # با استفاده از echo به جای heredoc برای جلوگیری از خطای YAML
-              echo '    @Override' >> "$ACTIVITY_FILE"
-              echo '    public boolean onOptionsItemSelected(android.view.MenuItem item) {' >> "$ACTIVITY_FILE"
-              echo '        if (item.getItemId() == R.id.action_webview) {' >> "$ACTIVITY_FILE"
-              echo '            startActivity(new android.content.Intent(this, com.andoco.app.webview.WebViewActivity.class));' >> "$ACTIVITY_FILE"
-              echo '            return true;' >> "$ACTIVITY_FILE"
-              echo '        }' >> "$ACTIVITY_FILE"
-              echo '        return super.onOptionsItemSelected(item);' >> "$ACTIVITY_FILE"
-              echo '    }' >> "$ACTIVITY_FILE"
-              echo '}' >> "$ACTIVITY_FILE"
-            fi
-          fi
+          # 3.1. اضافه کردن import
+          sed -i 's/import android.os.Bundle;/import android.os.Bundle;\nimport com.andoco.app.webview.WebViewActivity;/' "$ACTIVITY_FILE"
+
+          # 3.2. تعریف شناسه جدید برای آیتم منو
+          sed -i 's/private static final int CONTEXT_MENU_REPORT_ID = 9;/private static final int CONTEXT_MENU_REPORT_ID = 9;\n    private static final int CONTEXT_MENU_OPENCODE_WEB_ID = 12;/' "$ACTIVITY_FILE"
+
+          # 3.3. اضافه کردن آیتم به منوی زمینه (onCreateContextMenu)
+          # این کار آیتم را در انتهای منو اضافه می‌کند
+          sed -i 's/menu.add(Menu.NONE, CONTEXT_MENU_REPORT_ID, Menu.NONE, R.string.action_report_issue);/menu.add(Menu.NONE, CONTEXT_MENU_REPORT_ID, Menu.NONE, R.string.action_report_issue);\n        menu.add(Menu.NONE, CONTEXT_MENU_OPENCODE_WEB_ID, Menu.NONE, "OpenCode Web");/' "$ACTIVITY_FILE"
+
+          # 3.4. مدیریت کلیک روی آیتم جدید (onContextItemSelected)
+          # این کد را بعد از case مربوط به REPORT_ID اضافه می‌کنیم
+          sed -i 's/case CONTEXT_MENU_REPORT_ID:/case CONTEXT_MENU_REPORT_ID:/' "$ACTIVITY_FILE" # فقط برای اطمینان از وجود
+          sed -i '/case CONTEXT_MENU_REPORT_ID:/a \ \ \ \ \ \ \ \ \ \ \ \ case CONTEXT_MENU_OPENCODE_WEB_ID:\n                startActivity(new Intent(this, WebViewActivity.class));\n                return true;' "$ACTIVITY_FILE"
+
 
       - name: Rebuild APK with WebView
         run: |
