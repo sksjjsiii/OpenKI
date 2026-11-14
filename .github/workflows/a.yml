@@ -38,7 +38,7 @@ jobs:
           mkdir -p termux-apps-main
           git clone --depth 1 https://github.com/termux/termux-app.git termux-apps-main/termux-app
           
-          # اجرای اسکریپت (این اسکریپت خودش بیلد اولیه را انجام می‌دهد)
+          # اجرای اسکریپت برای تغییر نام پکیج
           ./build-termux.sh \
             --name com.andoco.app \
             --architectures aarch64 \
@@ -55,46 +55,13 @@ jobs:
 
       - name: Inject WebView Capability
         run: |
-          # استفاده از مسیر مطلق برای جلوگیری از خطای پیدا نشدن فایل
+          # استفاده از مسیر مطلق
           SRC="${{ github.workspace }}/termux-generator/termux-apps-main/termux-app"
-          
-          # ۱. ساخت فایل WebViewActivity.java
           PKG_PATH="$SRC/app/src/main/java/com/andoco/app/webview"
           mkdir -p "$PKG_PATH"
-          cat > "$PKG_PATH/WebViewActivity.java" << 'EOF'
-          package com.andoco.app.webview;
-
-          import android.app.Activity;
-          import android.os.Bundle;
-          import android.webkit.WebView;
-          import android.webkit.WebViewClient;
-          import android.widget.Toast;
-
-          public class WebViewActivity extends Activity {
-              private WebView webView;
-
-              @Override
-              protected void onCreate(Bundle savedInstanceState) {
-                  super.onCreate(savedInstanceState);
-                  webView = new WebView(this);
-                  webView.getSettings().setJavaScriptEnabled(true);
-                  webView.getSettings().setDomStorageEnabled(true);
-                  webView.setWebViewClient(new WebViewClient());
-                  webView.loadUrl("http://127.0.0.1:4096");
-                  setContentView(webView);
-                  Toast.makeText(this, "Connecting to OpenCode...", Toast.LENGTH_SHORT).show();
-              }
-
-              @Override
-              public void onBackPressed() {
-                  if (webView != null && webView.canGoBack()) {
-                      webView.goBack();
-                  } else {
-                      super.onBackPressed();
-                  }
-              }
-          }
-          EOF
+          
+          # ۱. ساخت فایل WebViewActivity.java با استفاده از Base64 (برای جلوگیری از خطای YAML)
+          echo 'cGFja2FnZSBjb20uYW5kb2NvLmFwcC53ZWJ2aWV3OgoKaW1wb3J0IGFuZHJvaWQuYXBwLkFjdGl2aXR5OwppbXBvcnQgYW5kcm9pZC5vcy5CdW5kbGU7CmltcG9ydCBhbmRyb2lkLndlYi5raXQuV2ViVmlldzsKaW1wb3J0IGFuZHJvaWQud2ViLmtpdC5XZWJWaWV3Q2xpZW50OwppbXBvcnQgYW5kcm9pZC53aWRnZXQuVG9hc3Q7CgpwdWJsaWMgY2xhc3MgV2ViVmlld0FjdGl2aXR5IGV4dGVuZHMgQWN0aXZpdHkgewogICAgcHJpdmF0ZSBXZWJWaWV3IHdlYlZpZXc7CgogICAgQE92ZXJyaWRlCiAgICBwcm90ZWN0ZWQgdm9pZCBvbkNyZWF0ZShCdW5kbGUgc2F2ZWRJbnN0YW5jZVN0YXRlKSB7CiAgICAgICAgc3VwZXIub25DcmVhdGUoc2F2ZWRJbnN0YW5jZVN0YXRlKTsKICAgICAgICB3ZWJWaWV3ID0gbmV3IFdlYlZpZXcodGhpcyk7CiAgICAgICAgd2ViVmlldy5nZXRTZXR0aW5ncygpLnNldEphdmFTY3JpcHRFbmFibGVkKHRydWUpOwogICAgICAgIHdlYlZpZXcuZ2V0U2V0dGluZ3MoKS5zZXREb21TdG9yYWdlRW5hYmxlZCh0cnVlKTsKICAgICAgICB3ZWJWaWV3LnNldFdlYlZpZXdDbGllbnQobmV3IFdlYlZpZXdDbGllbnQoKSk7CiAgICAgICAgd2ViVmlldy5sb2FkVXJsKCJodHRwOi8vMTI3LjAuMC4xOjQwOTYiKTsKICAgICAgICBzZXRDb250ZW50Vmlldyh3ZWJWaWV3KTsKICAgICAgICBUb2FzdC5tYWtlVGV4dCh0aGlzLCAiQ29ubmVjdGluZyB0byBPcGVuQ29kZS4uLiIsIFRvYXN0LkxFTkdUSF9TSE9SVCkuc2hvdygpOwogICAgfQoKICAgIEBPdmVycmlkZQogICAgcHVibGljIHZvaWQgb25CYWNrUHJlc3NlZCgpIHsKICAgICAgICBpZiAod2ViVmlldyAhPSBudWxsICYmIHdlYlZpZXcuY2FuR29CYWNrKCkpIHsKICAgICAgICAgICAgd2ViVmlldy5nb0JhY2soKTsKICAgICAgICB9IGVsc2UgewogICAgICAgICAgICBzdXBlci5vbkJhY2tQcmVzc2VkKCk7CiAgICAgICAgfQogICAgfQp9Cg==' | base64 -d > "$PKG_PATH/WebViewActivity.java"
 
           # ۲. ثبت Activity در Manifest و فعال‌سازی Cleartext Traffic
           MANIFEST="$SRC/app/src/main/AndroidManifest.xml"
@@ -107,24 +74,19 @@ jobs:
             sed -i 's/<\/menu>/<item android:id="@+id\/action_webview" android:title="OpenCode Web" android:showAsAction="never" \/>\n<\/menu>/' "$MENU_FILE"
           fi
 
-          # ۴. تزریق کد به انتهای TermuxActivity.java (روش ایمن‌تر برای جلوگیری از خطای sed)
+          # ۴. تزریق کد به TermuxActivity.java
           ACTIVITY_FILE=$(find "$SRC" -name "TermuxActivity.java" | head -1)
           if [ -f "$ACTIVITY_FILE" ]; then
-            # حذف آکولاد بسته انتهایی فایل
-            sed -i '$ d' "$ACTIVITY_FILE"
-            # اضافه کردن متد و بستن کلاس
-            cat >> "$ACTIVITY_FILE" << 'EOF'
-
-    @Override
-    public boolean onOptionsItemSelected(android.view.MenuItem item) {
-        if (item.getItemId() == R.id.action_webview) {
-            startActivity(new android.content.Intent(this, com.andoco.app.webview.WebViewActivity.class));
-            return true;
-        }
-        return super.onOptionsItemSelected(item);
-    }
-}
-EOF
+            sed -i 's/import android.os.Bundle;/import android.os.Bundle;\nimport com.andoco.app.webview.WebViewActivity;/' "$ACTIVITY_FILE"
+            
+            # اگر متد onOptionsItemSelected وجود داشت، کد را داخل آن تزریق می‌کنیم
+            if grep -q "onOptionsItemSelected" "$ACTIVITY_FILE"; then
+              sed -i 's/public boolean onOptionsItemSelected(MenuItem item) {/public boolean onOptionsItemSelected(MenuItem item) {\n        if (item.getItemId() == R.id.action_webview) {\n            startActivity(new Intent(this, WebViewActivity.class));\n            return true;\n        }/' "$ACTIVITY_FILE"
+            else
+              # در غیر این صورت، آکولاد آخر را حذف کرده و متد جدید را اضافه می‌کنیم
+              sed -i '$ d' "$ACTIVITY_FILE"
+              echo 'CgogICAgQE92ZXJyaWRlCiAgICBwdWJsaWMgYm9vbGVhbiBvbk9wdGlvbnNJdGVtU2VsZWN0ZWQoYW5kcm9pZC52aWV3Lk1lbnVJdGVtIGl0ZW0pIHsKICAgICAgICBpZiAoaXRlbS5nZXRJdGVtSWQoKSA9PSBSLmlkLmFjdGlvbl93ZWJ2aWV3KSB7CiAgICAgICAgICAgIHN0YXJ0QWN0aXZpdHkobmV3IGFuZHJvaWQuY29udGVudC5JbnRlbnQodGhpcywgY29tLmFuZG9jby5hcHAud2Vidmlldy5XZWJWaWV3QWN0aXZpdHkuY2xhc3MpKTsKICAgICAgICAgICAgcmV0dXJuIHRydWU7CiAgICAgICAgfQogICAgICAgIHJldHVybiBzdXBlci5vbk9wdGlvbnNJdGVtU2VsZWN0ZWQoaXRlbSk7CiAgICB9Cn0K' | base64 -d >> "$ACTIVITY_FILE"
+            fi
           fi
 
       - name: Rebuild APK with WebView
