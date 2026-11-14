@@ -37,16 +37,20 @@ public class WebViewActivity extends Activity {
         settings.setUseWideViewPort(true);
         settings.setBuiltInZoomControls(false);
 
+        // 【مهم‌ترین تغییر】اجازه دادن به بارگذاری محتوای HTTP (بدون SSL) در WebView
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+        }
+
         webView.setWebViewClient(new WebViewClient());
         webView.loadUrl("http://127.0.0.1:4096");
 
-        // ۳. مخفی کردن نوار وضعیت و نوار ناوبری (Immersive Mode)
+        // ۳. مخفی کردن نوار وضعیت و نوار ناوبری
         hideSystemUI();
 
         setContentView(webView);
     }
 
-    // ۴. این متد برای مخفی کردن کامل نوارهای سیستم‌عامل است
     private void hideSystemUI() {
         View decorView = getWindow().getDecorView();
         decorView.setSystemUiVisibility(
@@ -59,7 +63,6 @@ public class WebViewActivity extends Activity {
         );
     }
 
-    // ۵. اگر کاربر روی صفحه لمس کرد، دوباره تمام صفحه شود
     @Override
     public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
