@@ -9,6 +9,9 @@ import android.view.WindowManager;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.security.NetworkSecurityPolicy;
+import android.net.http.SslError;
+import android.webkit.SslErrorHandler;
 
 public class WebViewActivity extends Activity {
     private WebView webView;
@@ -18,7 +21,6 @@ public class WebViewActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        // ۱. تمام صفحه کردن پنجره
         getWindow().setFlags(
                 WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
                 WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
@@ -28,7 +30,6 @@ public class WebViewActivity extends Activity {
                     WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
         }
 
-        // ۲. ساخت WebView و تنظیمات آن
         webView = new WebView(this);
         WebSettings settings = webView.getSettings();
         settings.setJavaScriptEnabled(true);
@@ -37,15 +38,25 @@ public class WebViewActivity extends Activity {
         settings.setUseWideViewPort(true);
         settings.setBuiltInZoomControls(false);
 
-        // 【مهم‌ترین تغییر】اجازه دادن به بارگذاری محتوای HTTP (بدون SSL) در WebView
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
             settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
         }
 
-        webView.setWebViewClient(new WebViewClient());
+        // 【مهم‌ترین تغییر】به‌صراحت به WebView می‌گوییم که به 127.0.0.1 اجازه دسترسی بدهد
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            NetworkSecurityPolicy.getInstance().setCleartextTrafficPermitted(true);
+        }
+
+        // مدیریت خطاهای SSL (در صورت نیاز)
+        webView.setWebViewClient(new WebViewClient() {
+            @Override
+            public void onReceivedSslError(WebView view, SslErrorHandler handler, SslError error) {
+                handler.proceed(); // برای لوکال‌هاست، خطای SSL را نادیده بگیر
+            }
+        });
+
         webView.loadUrl("http://127.0.0.1:4096");
 
-        // ۳. مخفی کردن نوار وضعیت و نوار ناوبری
         hideSystemUI();
 
         setContentView(webView);
