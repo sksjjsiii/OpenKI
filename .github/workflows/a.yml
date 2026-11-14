@@ -34,11 +34,11 @@ jobs:
       - name: Generate Termux Source with Custom Package Name
         run: |
           cd termux-generator
-          # 关键修复：脚本依赖 termux-apps-main/termux-app 目录，我们提前创建好并克隆源码
+          # ایجاد پوشه و کلون کردن سورس اصلی ترموکس
           mkdir -p termux-apps-main
           git clone --depth 1 https://github.com/termux/termux-app.git termux-apps-main/termux-app
           
-          # 现在运行脚本，它会直接使用已存在的源码
+          # اجرای اسکریپت (این اسکریپت خودش بیلد اولیه را انجام می‌دهد)
           ./build-termux.sh \
             --name com.andoco.app \
             --architectures aarch64 \
@@ -53,26 +53,15 @@ jobs:
             --disable-tasker \
             --disable-styling
 
-      - name: Locate Generated Termux Source
-        id: find-src
-        run: |
-          cd termux-generator
-          TERMUX_SRC="termux-apps-main/termux-app"
-          if [ ! -d "$TERMUX_SRC" ]; then
-            echo "Termux source not found at $TERMUX_SRC"
-            exit 1
-          fi
-          echo "TERMUX_SRC=$TERMUX_SRC" >> $GITHUB_ENV
-          echo "Found Termux source at: $TERMUX_SRC"
-
       - name: Inject WebView Capability
         run: |
-          SRC="$TERMUX_SRC"
+          # استفاده از مسیر مطلق برای جلوگیری از خطای پیدا نشدن فایل
+          SRC="${{ github.workspace }}/termux-generator/termux-apps-main/termux-app"
           
-          # 1. 创建 WebViewActivity.java
-          PKG_PATH="$SRC/app/src/main/java/com/andoco/app"
-          mkdir -p "$PKG_PATH/webview"
-          cat > "$PKG_PATH/webview/WebViewActivity.java" << 'EOF'
+          # ۱. ساخت فایل WebViewActivity.java
+          PKG_PATH="$SRC/app/src/main/java/com/andoco/app/webview"
+          mkdir -p "$PKG_PATH"
+          cat > "$PKG_PATH/WebViewActivity.java" << 'EOF'
           package com.andoco.app.webview;
 
           import android.app.Activity;
@@ -82,10 +71,12 @@ jobs:
           import android.widget.Toast;
 
           public class WebViewActivity extends Activity {
+              private WebView webView;
+
               @Override
               protected void onCreate(Bundle savedInstanceState) {
                   super.onCreate(savedInstanceState);
-                  WebView webView = new WebView(this);
+                  webView = new WebView(this);
                   webView.getSettings().setJavaScriptEnabled(true);
                   webView.getSettings().setDomStorageEnabled(true);
                   webView.setWebViewClient(new WebViewClient());
@@ -93,30 +84,52 @@ jobs:
                   setContentView(webView);
                   Toast.makeText(this, "Connecting to OpenCode...", Toast.LENGTH_SHORT).show();
               }
+
+              @Override
+              public void onBackPressed() {
+                  if (webView != null && webView.canGoBack()) {
+                      webView.goBack();
+                  } else {
+                      super.onBackPressed();
+                  }
+              }
           }
           EOF
 
-          # 2. 在 Manifest 中注册 Activity 并允许 Cleartext
+          # ۲. ثبت Activity در Manifest و فعال‌سازی Cleartext Traffic
           MANIFEST="$SRC/app/src/main/AndroidManifest.xml"
           sed -i 's/<application /<application android:usesCleartextTraffic="true" /' "$MANIFEST"
-          sed -i 's/<\/application>/<activity android:name=".webview.WebViewActivity" android:exported="true" \/>\n<\/application>/' "$MANIFEST"
+          sed -i 's/<\/application>/<activity android:name="com.andoco.app.webview.WebViewActivity" android:exported="true" \/>\n<\/application>/' "$MANIFEST"
 
-          # 3. 在菜单中添加 "OpenCode Web" 选项
+          # ۳. اضافه کردن دکمه به منو
           MENU_FILE="$SRC/app/src/main/res/menu/main.xml"
           if [ -f "$MENU_FILE" ]; then
             sed -i 's/<\/menu>/<item android:id="@+id\/action_webview" android:title="OpenCode Web" android:showAsAction="never" \/>\n<\/menu>/' "$MENU_FILE"
           fi
 
-          # 4. 在 TermuxActivity 中处理菜单点击事件
-          ACTIVITY_FILE="$SRC/app/src/main/java/com/termux/app/TermuxActivity.java"
+          # ۴. تزریق کد به انتهای TermuxActivity.java (روش ایمن‌تر برای جلوگیری از خطای sed)
+          ACTIVITY_FILE=$(find "$SRC" -name "TermuxActivity.java" | head -1)
           if [ -f "$ACTIVITY_FILE" ]; then
-            sed -i 's/import android.os.Bundle;/import android.os.Bundle;\nimport com.andoco.app.webview.WebViewActivity;/' "$ACTIVITY_FILE"
-            sed -i 's/public boolean onMenuItemClick(MenuItem item) {/public boolean onMenuItemClick(MenuItem item) {\n        if (item.getItemId() == R.id.action_webview) {\n            startActivity(new Intent(this, WebViewActivity.class));\n            return true;\n        }/' "$ACTIVITY_FILE"
+            # حذف آکولاد بسته انتهایی فایل
+            sed -i '$ d' "$ACTIVITY_FILE"
+            # اضافه کردن متد و بستن کلاس
+            cat >> "$ACTIVITY_FILE" << 'EOF'
+
+    @Override
+    public boolean onOptionsItemSelected(android.view.MenuItem item) {
+        if (item.getItemId() == R.id.action_webview) {
+            startActivity(new android.content.Intent(this, com.andoco.app.webview.WebViewActivity.class));
+            return true;
+        }
+        return super.onOptionsItemSelected(item);
+    }
+}
+EOF
           fi
 
-      - name: Build Debug APK
+      - name: Rebuild APK with WebView
         run: |
-          cd "$TERMUX_SRC"
+          cd "${{ github.workspace }}/termux-generator/termux-apps-main/termux-app"
           chmod +x ./gradlew
           ./gradlew assembleDebug --stacktrace
 
@@ -124,5 +137,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Andoco-Debug-APK
-          path: termux-apps-main/termux-app/app/build/outputs/apk/debug/app-debug.apk
+          path: termux-generator/termux-apps-main/termux-app/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
