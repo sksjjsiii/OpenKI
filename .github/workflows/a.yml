@@ -9,19 +9,30 @@ jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
-      contents: write # دسترسی لازم برای push کردن سورس به مخزن
+      contents: write
 
     steps:
-      # 1. پاکسازی مخزن (به جز پوشه .github)
+      # 1. چک‌اوت مخزن
       - name: Checkout Repository
         uses: actions/checkout@v4
 
+      # 2. کپی موقت فایل WebViewActivity.java به خارج از مخزن (برای حفظ آن)
+      - name: Backup WebViewActivity
+        run: |
+          mkdir -p /tmp/backup
+          if [ -f "source/WebViewActivity.java" ]; then
+            cp source/WebViewActivity.java /tmp/backup/WebViewActivity.java
+          else
+            echo "Warning: source/WebViewActivity.java not found in repository"
+          fi
+
+      # 3. پاکسازی مخزن (به جز .github)
       - name: Clean repository (keep only .github)
         run: |
           find . -maxdepth 1 -not -name '.github' -not -name '.' -exec rm -rf {} +
           ls -la
 
-      # 2. نصب پیش‌نیازها
+      # 4. نصب پیش‌نیازها
       - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
@@ -35,7 +46,7 @@ jobs:
           accept-android-sdk-licenses: true
           log-accepted-android-sdk-licenses: true
 
-      # 3. دانلود و آماده‌سازی سورس ترموکس
+      # 5. دانلود و آماده‌سازی سورس ترموکس
       - name: Clone termux-generator
         run: |
           git clone https://github.com/robertkirkman/termux-generator.git
@@ -61,17 +72,29 @@ jobs:
             --disable-tasker \
             --disable-styling
 
-      # 4. تزریق قابلیت وب‌ویو
+      # 6. تزریق قابلیت وب‌ویو
       - name: Inject WebView Capability
         run: |
           SRC="${{ github.workspace }}/termux-generator/termux-apps-main/termux-app"
           PKG_PATH="$SRC/app/src/main/java/com/andoco/app/webview"
           mkdir -p "$PKG_PATH"
-          
-          # کپی فایل WebViewActivity.java
-          cp "${{ github.workspace }}/source/WebViewActivity.java" "$PKG_PATH/WebViewActivity.java"
 
-          # بازنویسی فایل network_security_config.xml با استفاده از echo (برای جلوگیری از خطای YAML)
+          # کپی فایل WebViewActivity.java از بکاپ
+          if [ -f "/tmp/backup/WebViewActivity.java" ]; then
+            cp /tmp/backup/WebViewActivity.java "$PKG_PATH/WebViewActivity.java"
+          else
+            # اگر فایل در مخزن نبود، یک نسخه ساده ایجاد می‌کنیم
+            echo "Warning: WebViewActivity.java not found in backup. Creating a basic version."
+            echo 'package com.andoco.app.webview;' > "$PKG_PATH/WebViewActivity.java"
+            echo 'import android.app.Activity;' >> "$PKG_PATH/WebViewActivity.java"
+            echo 'import android.os.Bundle;' >> "$PKG_PATH/WebViewActivity.java"
+            echo 'import android.webkit.WebView;' >> "$PKG_PATH/WebViewActivity.java"
+            echo 'public class WebViewActivity extends Activity {' >> "$PKG_PATH/WebViewActivity.java"
+            echo '    @Override protected void onCreate(Bundle b) { super.onCreate(b); WebView w = new WebView(this); w.getSettings().setJavaScriptEnabled(true); w.loadUrl("http://127.0.0.1:4096"); setContentView(w); }' >> "$PKG_PATH/WebViewActivity.java"
+            echo '}' >> "$PKG_PATH/WebViewActivity.java"
+          fi
+
+          # بازنویسی فایل network_security_config.xml
           XML_FILE="$SRC/app/src/main/res/xml/network_security_config.xml"
           if [ -f "$XML_FILE" ]; then
             echo '<?xml version="1.0" encoding="utf-8"?>' > "$XML_FILE"
@@ -96,30 +119,42 @@ jobs:
           sed -i 's/menu.add(Menu.NONE, CONTEXT_MENU_REPORT_ID, Menu.NONE, R.string.action_report_issue);/menu.add(Menu.NONE, CONTEXT_MENU_REPORT_ID, Menu.NONE, R.string.action_report_issue);\n        menu.add(Menu.NONE, CONTEXT_MENU_OPENCODE_WEB_ID, Menu.NONE, "OpenCode Web");/' "$ACTIVITY_FILE"
           sed -i 's/case CONTEXT_MENU_REPORT_ID:/case CONTEXT_MENU_OPENCODE_WEB_ID:\n                startActivity(new Intent(this, WebViewActivity.class));\n                return true;\n            case CONTEXT_MENU_REPORT_ID:/' "$ACTIVITY_FILE"
 
-      # 5. بیلد APK
+      # 7. بیلد APK
       - name: Rebuild APK with WebView
         run: |
           cd "${{ github.workspace }}/termux-generator/termux-apps-main/termux-app"
           chmod +x ./gradlew
           ./gradlew assembleDebug --stacktrace
 
-      # 6. کپی سورس به پوشه source در ریشه مخزن و کامیت/پوش
+      # 8. کپی سورس به پوشه source در ریشه مخزن و کامیت/پوش
       - name: Save Source to Repository and Push
         run: |
-          # کپی کردن سورس ترموکس به پوشه source در ریشه
+          # ایجاد مجدد پوشه source
           mkdir -p source
-          cp -r termux-generator/termux-apps-main/termux-app/* source/
           
-          # پیکربندی گیت و پوش کردن تغییرات
+          # کپی کردن فایل WebViewActivity.java (هم از بکاپ و هم از سورس)
+          if [ -f "/tmp/backup/WebViewActivity.java" ]; then
+            cp /tmp/backup/WebViewActivity.java source/WebViewActivity.java
+          fi
+
+          # کپی کردن سورس ترموکس به پوشه source
+          cp -r termux-generator/termux-apps-main/termux-app/* source/
+
+          # پیکربندی گیت
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # اضافه کردن همه فایل‌ها (به جز .github)
           git add source/
-          git commit -m "Auto-save updated Termux source with WebView" || echo "No changes to commit"
+          git add .
+          
+          # کامیت و پوش
+          git commit -m "Auto-save updated Termux source with WebView [skip ci]" || echo "No changes to commit"
           git push
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # 7. آپلود فایل APK به عنوان آرتیفکت
+      # 9. آپلود فایل APK به عنوان آرتیفکت
       - name: Upload Specific APK Artifact
         uses: actions/upload-artifact@v4
         with:
