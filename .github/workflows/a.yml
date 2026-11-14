@@ -1,653 +1,132 @@
-name: OpenCode Web (Secure)
+name: Build Andoco APK
 
 on:
   workflow_dispatch:
-    inputs:
-      duration:
-        description: 'مدت زمان اجرا (دقیقه)'
-        required: true
-        default: '60'
-      opencode_port:
-        description: 'پورت داخلی OpenCode Web'
-        required: true
-        default: '4096'
-      proxy_port:
-        description: 'پورت پروکسی امن (Caddy)'
-        required: true
-        default: '8443'
-
-permissions:
-  contents: write
-
-concurrency:
-  group: opencode-web-${{ github.ref }}
-  cancel-in-progress: false
+  push:
+    branches: [ main, master ]
 
 jobs:
-  opencode-web:
+  build:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
-
-    env:
-      POLLINATIONS_API_KEY: ${{ secrets.POLLINATIONS_API_KEY }}
-      OPENCODE_BASIC_USER: ${{ secrets.OPENCODE_BASIC_USER }}
-      OPENCODE_BASIC_PASS: ${{ secrets.OPENCODE_BASIC_PASS }}
-      OPENCODE_PORT: ${{ github.event.inputs.opencode_port }}
-      PROXY_PORT: ${{ github.event.inputs.proxy_port }}
-      CADDY_VERSION: '2.8.4'
-
     steps:
-      - name: Checkout full repository
+      - name: Checkout Repository
         uses: actions/checkout@v4
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
         with:
-          fetch-depth: 0
-          persist-credentials: true
-          token: ${{ secrets.GITHUB_TOKEN }}
+          distribution: 'temurin'
+          java-version: '17'
 
-      - name: تنظیم Git identity + مسیرهای امن
-        run: |
-          git config user.name  "opencode-bot"
-          git config user.email "opencode-bot@users.noreply.github.com"
-
-          LOG_DIR="${RUNNER_TEMP:-/tmp}/opencode-logs"
-          mkdir -p "$LOG_DIR"
-          echo "LOG_DIR=$LOG_DIR" >> "$GITHUB_ENV"
-
-          CONFIG_ROOT="${RUNNER_TEMP:-/tmp}/opencode-config"
-          mkdir -p "$CONFIG_ROOT/opencode"
-          echo "XDG_CONFIG_HOME=$CONFIG_ROOT" >> "$GITHUB_ENV"
-
-          printf '\n# === OpenCode runner artifacts (auto) ===\n*.log\nopencode-url.txt\n.opencode/\nopencode.json\nfree_tool_models_report.json\n.env\n.env.*\n' >> .gitignore
-
-      - name: نصب Node.js
-        uses: actions/setup-node@v4
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
         with:
-          node-version: '20'
+          packages: 'platforms;android-34 build-tools;34.0.0 platform-tools'
+          accept-android-sdk-licenses: true
+          log-accepted-android-sdk-licenses: true
 
-      - name: نصب OpenCode
+      - name: Clone termux-generator
         run: |
-          npm install -g opencode-ai@latest || npm install -g opencode@latest
-          opencode --version || true
+          git clone https://github.com/robertkirkman/termux-generator.git
+          cd termux-generator
+          chmod +x build-termux.sh
 
-      - name: نصب Caddy (دانلود مستقیم از GitHub Releases)
+      - name: Generate Termux Source with Custom Package Name
         run: |
-          set -euo pipefail
-          ARCH="amd64"
-          URL="https://github.com/caddyserver/caddy/releases/download/v${CADDY_VERSION}/caddy_${CADDY_VERSION}_linux_${ARCH}.tar.gz"
-          echo "⬇️ دانلود Caddy از: $URL"
-          curl -fsSL "$URL" -o /tmp/caddy.tar.gz
-          tar -xzf /tmp/caddy.tar.gz -C /tmp caddy
-          sudo install -m 0755 /tmp/caddy /usr/local/bin/caddy
-          rm -f /tmp/caddy /tmp/caddy.tar.gz
-          caddy version
+          cd termux-generator
+          # 【关键修复】预先创建空的 termux-apps-main 目录
+          mkdir -p termux-apps-main
+          
+          # 完全交由脚本自行管理所有依赖仓库的克隆
+          ./build-termux.sh \
+            --name com.andoco.app \
+            --architectures aarch64 \
+            --dirty \
+            --disable-bootstrap \
+            --disable-x11 \
+            --disable-gui \
+            --disable-api \
+            --disable-boot \
+            --disable-widget \
+            --disable-float \
+            --disable-tasker \
+            --disable-styling
 
-      - name: نصب وابستگی‌های پایتون
+      - name: Locate Generated Termux Source
+        id: find-src
         run: |
-          python3 -m pip install --quiet --disable-pip-version-check requests
+          cd termux-generator
+          TERMUX_SRC="termux-apps-main/termux-app"
+          if [ ! -d "$TERMUX_SRC" ]; then
+            echo "Termux source directory not found at expected path: $TERMUX_SRC"
+            # 备用搜索
+            TERMUX_SRC=$(find . -maxdepth 4 -type d -name "termux-app" | head -1)
+          fi
+          if [ -z "$TERMUX_SRC" ]; then
+            echo "Could not locate generated Termux source."
+            exit 1
+          fi
+          echo "TERMUX_SRC=$TERMUX_SRC" >> $GITHUB_ENV
+          echo "Found Termux source at: $TERMUX_SRC"
 
-      # ─────────────────────────────────────────────
-      # کشف مدل‌ها: فقط مدل‌هایی که هم موفق و هم Δ=0
-      # ─────────────────────────────────────────────
-      - name: کشف و تست مدل‌های رایگان با Δ=0
-        id: discover
-        continue-on-error: true
+      - name: Inject WebView Capability
         run: |
-          set -uo pipefail
-          REPORT="$RUNNER_TEMP/free_tool_models_report.json"
+          SRC="$TERMUX_SRC"
+          
+          # 1. 创建 WebViewActivity.java
+          PKG_PATH="$SRC/app/src/main/java/com/andoco/app"
+          mkdir -p "$PKG_PATH/webview"
+          cat > "$PKG_PATH/webview/WebViewActivity.java" << 'EOF'
+          package com.andoco.app.webview;
 
-          python3 - "$REPORT" <<'PYEOF'
-          import json
-          import os
-          import sys
-          import time
+          import android.app.Activity;
+          import android.os.Bundle;
+          import android.webkit.WebView;
+          import android.webkit.WebViewClient;
+          import android.widget.Toast;
 
-          import requests
-
-          BASE = "https://gen.pollinations.ai"
-          MODELS_URL = f"{BASE}/text/models"
-          CHAT_URL = f"{BASE}/v1/chat/completions"
-          BALANCE_URL = f"{BASE}/account/balance"
-
-          API_KEY = os.environ.get("POLLINATIONS_API_KEY", "")
-          if not API_KEY:
-              sys.exit("POLLINATIONS_API_KEY not set")
-
-          HEADERS = {
-              "Authorization": f"Bearer {API_KEY}",
-              "Content-Type": "application/json",
-          }
-
-          TIMEOUT = 9
-          RETRIES = 2
-          MAX_TOKENS = 512
-          SLEEP_BETWEEN = 1.2
-
-          TEST_MESSAGES = [
-              {"role": "user", "content": "Reply with exactly one word: what color is the sky on a clear day?"}
-          ]
-          TEST_TOOLS = [{
-              "type": "function",
-              "function": {
-                  "name": "ping",
-                  "description": "Trivial echo tool for testing native tool calling.",
-                  "parameters": {
-                      "type": "object",
-                      "properties": {"value": {"type": "string"}},
-                      "required": ["value"],
-                  },
-              },
-          }]
-
-
-          def fetch_models():
-              r = requests.get(MODELS_URL, headers=HEADERS, timeout=30)
-              r.raise_for_status()
-              data = r.json()
-              if isinstance(data, list):
-                  return data
-              if isinstance(data, dict):
-                  for key in ("data", "models", "items"):
-                      if isinstance(data.get(key), list):
-                          return data[key]
-              raise RuntimeError(f"unexpected response shape: {type(data)}")
-
-
-          def has_no_pricing_numbers(pricing) -> bool:
-              if not isinstance(pricing, dict):
-                  return False
-              numeric_keys = [k for k in pricing if k != "currency"]
-              return len(numeric_keys) == 0
-
-
-          def has_tool_calling(model: dict) -> bool:
-              caps = model.get("capabilities") or []
-              if "tool_calling" in caps:
-                  return True
-              return bool(model.get("tools"))
-
-
-          def filter_free_with_tools(models):
-              out = []
-              for m in models:
-                  if not has_no_pricing_numbers(m.get("pricing")):
-                      continue
-                  if not has_tool_calling(m):
-                      continue
-                  out.append({
-                      "id": m.get("name"),
-                      "title": m.get("title") or m.get("name"),
-                      "publisher": m.get("publisher") or m.get("brand"),
-                      "community": bool(m.get("community")),
-                      "supports_streaming": m.get("supports_streaming", True),
-                  })
-              out.sort(key=lambda x: (x["community"], x["id"]))
-              return out
-
-
-          def get_balance():
-              try:
-                  r = requests.get(BALANCE_URL, headers=HEADERS, timeout=20)
-                  if r.status_code != 200:
-                      return {"error": f"HTTP {r.status_code}", "body": r.text[:200]}
-                  return r.json()
-              except requests.RequestException as e:
-                  return {"error": str(e)}
-
-
-          def balance_number(b):
-              if not isinstance(b, dict) or "error" in b:
-                  return None
-              if isinstance(b.get("accountBalance"), dict):
-                  v = b["accountBalance"].get("total")
-                  if isinstance(v, (int, float)):
-                      return float(v)
-              v = b.get("balance")
-              return float(v) if isinstance(v, (int, float)) else None
-
-
-          def parse_stream(resp):
-              content_parts, tool_names = [], []
-              for raw in resp.iter_lines(decode_unicode=True):
-                  if not raw:
-                      continue
-                  line = raw.strip()
-                  if not line.startswith("data:"):
-                      continue
-                  payload = line[5:].strip()
-                  if payload == "[DONE]":
-                      break
-                  try:
-                      chunk = json.loads(payload)
-                  except Exception:
-                      continue
-                  choices = chunk.get("choices") or []
-                  if not choices:
-                      continue
-                  delta = choices[0].get("delta") or {}
-                  if delta.get("content"):
-                      content_parts.append(delta["content"])
-                  for tc in delta.get("tool_calls") or []:
-                      name = (tc.get("function") or {}).get("name")
-                      if name:
-                          tool_names.append(name)
-              return "".join(content_parts).strip(), tool_names
-
-
-          def call_model(model_id, use_stream):
-              payload = {
-                  "model": model_id,
-                  "messages": TEST_MESSAGES,
-                  "max_tokens": MAX_TOKENS,
-                  "temperature": 0,
-                  "tools": TEST_TOOLS,
-                  "tool_choice": "auto",
-                  "stream": use_stream,
+          public class WebViewActivity extends Activity {
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  WebView webView = new WebView(this);
+                  webView.getSettings().setJavaScriptEnabled(true);
+                  webView.getSettings().setDomStorageEnabled(true);
+                  webView.setWebViewClient(new WebViewClient());
+                  webView.loadUrl("http://127.0.0.1:4096");
+                  setContentView(webView);
+                  Toast.makeText(this, "Connecting to OpenCode...", Toast.LENGTH_SHORT).show();
               }
+          }
+          EOF
 
-              last_err = None
-              for attempt in range(RETRIES + 1):
-                  try:
-                      r = requests.post(
-                          CHAT_URL, headers=HEADERS,
-                          data=json.dumps(payload), timeout=TIMEOUT,
-                          stream=use_stream,
-                      )
+          # 2. 在 Manifest 中注册 Activity 并允许 Cleartext
+          MANIFEST="$SRC/app/src/main/AndroidManifest.xml"
+          sed -i 's/<application /<application android:usesCleartextTraffic="true" /' "$MANIFEST"
+          sed -i 's/<\/application>/<activity android:name=".webview.WebViewActivity" android:exported="true" \/>\n<\/application>/' "$MANIFEST"
 
-                      if r.status_code >= 400:
-                          try:
-                              body = r.json()
-                              msg = (body.get("error", {}) or {}).get("message") or r.text
-                          except Exception:
-                              msg = r.text
-                          low = msg.lower()
-                          if not use_stream and ("stream:true" in low or "stream: true" in low
-                                                 or "stream:false is not supported" in low):
-                              use_stream = True
-                              payload["stream"] = True
-                              continue
-                          return False, f"HTTP {r.status_code}: {msg[:200]}", use_stream
-
-                      if use_stream:
-                          content, tool_names = parse_stream(r)
-                          if tool_names:
-                              return True, f"tool_calls={tool_names} content={content[:80]!r}", use_stream
-                          if not content:
-                              return False, "stream returned empty", use_stream
-                          return True, f"content={content[:120]!r}", use_stream
-                      else:
-                          data = r.json()
-                          msg = ((data.get("choices") or [{}])[0].get("message") or {})
-                          content = (msg.get("content") or "").strip()
-                          tool_calls = msg.get("tool_calls") or []
-                          if tool_calls:
-                              names = [tc.get("function", {}).get("name", "?") for tc in tool_calls]
-                              return True, f"tool_calls={names} content={content[:80]!r}", use_stream
-                          return True, f"content={content[:120]!r}", use_stream
-
-                  except requests.Timeout:
-                      last_err = "timeout"
-                  except requests.RequestException as e:
-                      last_err = f"request error: {e}"
-
-                  if attempt < RETRIES:
-                      time.sleep(2 * (attempt + 1))
-
-              return False, f"failed after retries: {last_err}", use_stream
-
-
-          out_path = sys.argv[1]
-
-          try:
-              all_models = fetch_models()
-          except Exception as e:
-              print(f"خطا در دریافت لیست: {e}")
-              json.dump({"free_ok": [], "details": [], "error": str(e)},
-                        open(out_path, "w"), ensure_ascii=False, indent=2)
-              sys.exit(0)
-
-          candidates = filter_free_with_tools(all_models)
-          print(f"کل مدل‌ها: {len(all_models)} | کاندیدها: {len(candidates)}")
-
-          b0 = get_balance()
-          n0 = balance_number(b0)
-          print(f"موجودی اولیه: {n0 if n0 is not None else 'نامشخص'}")
-
-          results = []
-          for i, c in enumerate(candidates, 1):
-              mid = c["id"]
-              print(f"[{i}/{len(candidates)}] {mid}")
-              ok, detail, used_stream = call_model(mid, bool(c.get("supports_streaming", True)))
-              print(f"  {'✅' if ok else '❌'} {detail}")
-
-              n = balance_number(get_balance())
-              delta = (n - n0) if (n0 is not None and n is not None) else None
-              print(f"  Δ={delta}")
-
-              results.append({
-                  "model": mid,
-                  "title": c["title"],
-                  "community": c["community"],
-                  "stream": used_stream,
-                  "ok": ok,
-                  "detail": detail,
-                  "delta": delta,
-              })
-              time.sleep(SLEEP_BETWEEN)
-
-          # فقط موفق و Δ دقیقاً صفر
-          free_ok = [
-              r["model"] for r in results
-              if r["ok"] and r["delta"] is not None and abs(r["delta"]) < 1e-9
-          ]
-          paid_ok = [
-              r["model"] for r in results
-              if r["ok"] and (r["delta"] is None or abs(r["delta"]) >= 1e-9)
-          ]
-          failed = [r["model"] for r in results if not r["ok"]]
-
-          print("=" * 60)
-          print("free_ok (Δ=0 و موفق):", free_ok)
-          print("paid_ok:", paid_ok)
-          print("failed:", failed)
-
-          json.dump({
-              "initial_balance": n0,
-              "final_balance": balance_number(get_balance()),
-              "free_ok": free_ok,
-              "paid_ok": paid_ok,
-              "failed": failed,
-              "details": results,
-          }, open(out_path, "w"), ensure_ascii=False, indent=2)
-          PYEOF
-
-          if [ ! -f "$REPORT" ]; then
-            echo "⚠️ گزارش تولید نشد — لیست خالی"
-            echo "FREE_MODELS_JSON=[]" >> "$GITHUB_ENV"
-            exit 0
+          # 3. 在菜单中添加 "OpenCode Web" 选项
+          MENU_FILE="$SRC/app/src/main/res/menu/main.xml"
+          if [ -f "$MENU_FILE" ]; then
+            sed -i 's/<\/menu>/<item android:id="@+id\/action_webview" android:title="OpenCode Web" android:showAsAction="never" \/>\n<\/menu>/' "$MENU_FILE"
           fi
 
-          FREE_JSON=$(python3 - "$REPORT" <<'PY'
-          import json, sys
-          d = json.load(open(sys.argv[1]))
-          print(json.dumps(d.get("free_ok", []), ensure_ascii=False))
-          PY
-          )
-          echo "FREE_MODELS_JSON=$FREE_JSON" >> "$GITHUB_ENV"
-          echo "✅ مدل‌های رایگان (Δ=0): $FREE_JSON"
-
-      # ─────────────────────────────────────────────
-      # ساخت کانفیگ OpenCode با مدل‌های کشف‌شده
-      # ─────────────────────────────────────────────
-      - name: ساخت کانفیگ OpenCode
-        run: |
-          set -euo pipefail
-          CONFIG_FILE="$XDG_CONFIG_HOME/opencode/opencode.json"
-
-          PASS_HASH=$(caddy hash-password --plaintext "$OPENCODE_BASIC_PASS")
-          echo "CADDY_PASS_HASH=$PASS_HASH" >> "$GITHUB_ENV"
-
-          FREE_MODELS="${FREE_MODELS_JSON:-[]}"
-
-          python3 - "$CONFIG_FILE" "$POLLINATIONS_API_KEY" "$FREE_MODELS" <<'PY'
-          import json, sys
-          out_path, api_key, free_models_json = sys.argv[1], sys.argv[2], sys.argv[3]
-          try:
-              free_models = json.loads(free_models_json)
-              if not isinstance(free_models, list):
-                  free_models = []
-          except Exception:
-              free_models = []
-
-          models = {
-              "stealth/glyph-cluster": {"name": "stealth/glyph-cluster"},
-          }
-          for mid in free_models:
-              if isinstance(mid, str) and mid and mid not in models:
-                  models[mid] = {"name": mid}
-
-          if "stealth/glyph-cluster" in free_models:
-              default_model = "pollinations/stealth/glyph-cluster"
-          elif free_models:
-              default_model = f"pollinations/{free_models[0]}"
-          else:
-              default_model = "pollinations/stealth/glyph-cluster"
-
-          config = {
-              "$schema": "https://opencode.ai/config.json",
-              "provider": {
-                  "pollinations": {
-                      "npm": "@ai-sdk/openai-compatible",
-                      "name": "Pollinations (OpenAI-compatible)",
-                      "options": {
-                          "baseURL": "https://gen.pollinations.ai/v1",
-                          "apiKey": api_key,
-                      },
-                      "models": models,
-                  }
-              },
-              "model": default_model,
-              "autoupdate": False,
-              "share": "disabled",
-          }
-
-          json.dump(config, open(out_path, "w"), ensure_ascii=False, indent=2)
-          print(f"✅ کانفیگ با {len(models)} مدل ساخته شد. پیش‌فرض: {default_model}")
-          PY
-
-          chmod 600 "$CONFIG_FILE"
-          echo "----- محتوای کانفیگ -----"
-          cat "$CONFIG_FILE"
-          echo "-------------------------"
-
-      - name: اجرای OpenCode Web
-        run: |
-          set -euo pipefail
-          nohup opencode web --port "$OPENCODE_PORT" --hostname 127.0.0.1 > "$LOG_DIR/opencode.log" 2>&1 &
-          echo "OPENCODE_PID=$!" >> "$GITHUB_ENV"
-
-          for i in $(seq 1 30); do
-            CODE=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 2 "http://127.0.0.1:$OPENCODE_PORT" || echo "000")
-            if echo "$CODE" | grep -qE '200|30[0-9]|40[0-9]'; then
-              echo "✅ OpenCode Web آماده است (HTTP $CODE)"
-              break
-            fi
-            echo "⏳ انتظار... ($i/30) - کد: $CODE"
-            sleep 2
-          done
-          tail -n 40 "$LOG_DIR/opencode.log" || true
-
-      - name: راه‌اندازی Caddy
-        run: |
-          set -euo pipefail
-          CADDY_DIR="${RUNNER_TEMP:-/tmp}/caddy"
-          mkdir -p "$CADDY_DIR"
-
-          cat > "$CADDY_DIR/Caddyfile" <<'CADDYEOF'
-          {
-            admin off
-            auto_https off
-          }
-
-          :__PROXY_PORT__ {
-            encode zstd gzip
-
-            basic_auth {
-              __BASIC_USER__ __BASIC_HASH__
-            }
-
-            header {
-              Strict-Transport-Security "max-age=31536000; includeSubDomains"
-              X-Content-Type-Options "nosniff"
-              X-Frame-Options "DENY"
-              Referrer-Policy "no-referrer"
-              -Server
-            }
-
-            reverse_proxy 127.0.0.1:__OPENCODE_PORT__ {
-              header_up Host {host}
-              header_up X-Real-IP {remote_host}
-            }
-          }
-          CADDYEOF
-
-          python3 - "$CADDY_DIR/Caddyfile" <<'PY'
-          import sys, os
-          p = sys.argv[1]
-          s = open(p).read()
-          s = s.replace("__PROXY_PORT__", os.environ["PROXY_PORT"])
-          s = s.replace("__OPENCODE_PORT__", os.environ["OPENCODE_PORT"])
-          s = s.replace("__BASIC_USER__", os.environ["OPENCODE_BASIC_USER"])
-          s = s.replace("__BASIC_HASH__", os.environ["CADDY_PASS_HASH"])
-          open(p, "w").write(s)
-          PY
-
-          caddy validate --config "$CADDY_DIR/Caddyfile" --adapter caddyfile
-
-          nohup caddy run --config "$CADDY_DIR/Caddyfile" --adapter caddyfile > "$LOG_DIR/caddy.log" 2>&1 &
-          echo "CADDY_PID=$!" >> "$GITHUB_ENV"
-
-          sleep 5
-          tail -n 30 "$LOG_DIR/caddy.log" || true
-
-          NOAUTH=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:${PROXY_PORT}/" || echo "000")
-          echo "بدون رمز → HTTP $NOAUTH (باید 401 باشد)"
-          if [ "$NOAUTH" != "401" ]; then
-            echo "❌ Basic Auth کار نمی‌کند"
-            exit 1
+          # 4. 在 TermuxActivity 中处理菜单点击事件
+          ACTIVITY_FILE=$(find "$SRC" -name "TermuxActivity.java" | head -1)
+          if [ -f "$ACTIVITY_FILE" ]; then
+            sed -i 's/import android.os.Bundle;/import android.os.Bundle;\nimport com.andoco.app.webview.WebViewActivity;/' "$ACTIVITY_FILE"
+            sed -i 's/public boolean onMenuItemClick(MenuItem item) {/public boolean onMenuItemClick(MenuItem item) {\n        if (item.getItemId() == R.id.action_webview) {\n            startActivity(new Intent(this, WebViewActivity.class));\n            return true;\n        }/' "$ACTIVITY_FILE"
           fi
 
-          AUTH=$(curl -s -o /dev/null -w "%{http_code}" -u "${OPENCODE_BASIC_USER}:${OPENCODE_BASIC_PASS}" "http://127.0.0.1:${PROXY_PORT}/" || echo "000")
-          echo "با رمز → HTTP $AUTH (نباید 401 باشد)"
-          if [ "$AUTH" = "401" ]; then
-            echo "❌ رمز درست پذیرفته نمی‌شود"
-            exit 1
-          fi
-          echo "✅ Basic Auth فعال است"
-
-      - name: راه‌اندازی تونل Cloudflare
+      - name: Build Debug APK
         run: |
-          set -euo pipefail
-          curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
-          chmod +x cloudflared
+          cd "$TERMUX_SRC"
+          chmod +x ./gradlew
+          ./gradlew assembleDebug --stacktrace
 
-          nohup ./cloudflared tunnel --url "http://127.0.0.1:${PROXY_PORT}" --no-autoupdate > "$LOG_DIR/cloudflare.log" 2>&1 &
-          echo "CLOUDFLARED_PID=$!" >> "$GITHUB_ENV"
-
-          sleep 8
-          TUNNEL_URL=$(grep -oP 'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' "$LOG_DIR/cloudflare.log" | head -n1 || true)
-          if [ -z "$TUNNEL_URL" ]; then
-            echo "❌ خطا در ساخت تونل"
-            cat "$LOG_DIR/cloudflare.log"
-            exit 1
-          fi
-          echo "✅ تونل: $TUNNEL_URL"
-          echo "TUNNEL_URL=$TUNNEL_URL" >> "$GITHUB_ENV"
-          echo "$TUNNEL_URL" > opencode-url.txt
-
-      - name: نمایش خلاصه
-        run: |
-          {
-            echo "## OpenCode Web (Secure) 🔐"
-            echo ""
-            echo "- **URL:** ${{ env.TUNNEL_URL }}"
-            echo "- **Username:** (از Secrets → OPENCODE_BASIC_USER)"
-            echo "- **Password:** (از Secrets → OPENCODE_BASIC_PASS)"
-            echo "- **مدل‌های رایگان (Δ=0):** \`${FREE_MODELS_JSON:-[]}\`"
-            echo "- **مدت:** ${{ github.event.inputs.duration }} دقیقه"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: نگهبانی سرویس‌ها
-        run: |
-          set -uo pipefail
-          DURATION="${{ github.event.inputs.duration }}"
-          END_TIME=$(date -d "$DURATION minutes" +%s)
-          TUNNEL_URL="${{ env.TUNNEL_URL }}"
-          CADDY_CFG="${RUNNER_TEMP:-/tmp}/caddy/Caddyfile"
-
-          while [ "$(date +%s)" -lt "$END_TIME" ]; do
-            REMAINING=$((END_TIME - $(date +%s)))
-            echo "[$(date +%H:%M:%S)] باقی‌مانده: $((REMAINING/60))m $((REMAINING%60))s"
-
-            OC=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 "http://127.0.0.1:${OPENCODE_PORT}" || echo "000")
-            if [ "$OC" = "000" ]; then
-              echo "⚠️ OpenCode پاسخ نمی‌دهد - ری‌استارت..."
-              pkill -f "opencode web" || true
-              sleep 2
-              nohup opencode web --port "$OPENCODE_PORT" --hostname 127.0.0.1 > "$LOG_DIR/opencode.log" 2>&1 &
-              sleep 5
-            fi
-
-            CAD=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:${PROXY_PORT}/" || echo "000")
-            if [ "$CAD" != "401" ]; then
-              echo "⚠️ Caddy مشکل دارد (HTTP $CAD) - ری‌استارت..."
-              pkill -f caddy || true
-              sleep 2
-              nohup caddy run --config "$CADDY_CFG" --adapter caddyfile > "$LOG_DIR/caddy.log" 2>&1 &
-              sleep 5
-            fi
-
-            T=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 "$TUNNEL_URL" || echo "000")
-            if [ "$T" = "000" ] || [ "$T" = "502" ] || [ "$T" = "530" ]; then
-              echo "⚠️ تونل مشکل دارد (HTTP $T) - بازسازی..."
-              pkill -f cloudflared || true
-              sleep 2
-              nohup ./cloudflared tunnel --url "http://127.0.0.1:${PROXY_PORT}" --no-autoupdate > "$LOG_DIR/cloudflare.log" 2>&1 &
-              sleep 8
-              NEW=$(grep -oP 'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' "$LOG_DIR/cloudflare.log" | head -n1 || true)
-              if [ -n "$NEW" ]; then
-                TUNNEL_URL="$NEW"
-                echo "$NEW" > opencode-url.txt
-                echo "🔄 آدرس جدید: $NEW"
-              fi
-            fi
-
-            sleep 30
-          done
-
-      - name: آپلود آرتیفکت
-        if: always()
+      - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: opencode-secure-info
-          path: |
-            ${{ env.LOG_DIR }}/*.log
-            opencode-url.txt
-            ${{ runner.temp }}/free_tool_models_report.json
-          if-no-files-found: ignore
-
-      - name: Commit و push اجباری
-        if: always()
-        run: |
-          set -uo pipefail
-          git add -A
-
-          if git diff --cached -U0 | grep -aiE '(api[_-]?key|secret|token|password|Bearer)[=:" ]+[A-Za-z0-9_\-]{16,}'; then
-            echo "❌ الگوی مشکوک به Secret در تغییرات پیدا شد — commit لغو شد"
-            git reset
-            exit 1
-          fi
-
-          if git diff --cached --name-only | grep -aiE '(^|/)(\.env|opencode\.json|.*\.log|free_tool_models_report\.json)$|\.opencode/'; then
-            echo "❌ فایل حساس در staging — commit لغو شد"
-            git reset
-            exit 1
-          fi
-
-          if git diff --cached --quiet; then
-            echo "ℹ️ تغییری برای commit وجود ندارد"
-            exit 0
-          fi
-
-          git commit -m "chore(opencode): auto-commit at $(date -u +%Y-%m-%dT%H:%M:%SZ) [skip ci]"
-
-          for attempt in 1 2 3; do
-            if git push origin "HEAD:${{ github.ref_name }}"; then
-              echo "✅ push موفق (تلاش $attempt)"
-              exit 0
-            fi
-            echo "⚠️ push ناموفق، تلاش $attempt — rebase و مجدد..."
-            git pull --rebase --autostash origin "${{ github.ref_name }}" || true
-            sleep 3
-          done
-          echo "❌ push در ۳ تلاش ناموفق بود"
-          exit 1
+          name: Andoco-Debug-APK
+          path: termux-apps-main/termux-app/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
