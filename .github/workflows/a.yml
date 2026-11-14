@@ -59,22 +59,24 @@ jobs:
           # 1. کپی فایل WebViewActivity.java
           cp "${{ github.workspace }}/source/WebViewActivity.java" "$PKG_PATH/WebViewActivity.java"
 
-          # 2. ساخت فایل network_security_config.xml
-          XML_DIR="$SRC/app/src/main/res/xml"
-          mkdir -p "$XML_DIR"
-          cat > "$XML_DIR/network_security_config.xml" << 'EOF'
-          <?xml version="1.0" encoding="utf-8"?>
-          <network-security-config>
-              <domain-config cleartextTrafficPermitted="true">
-                  <domain includeSubdomains="true">127.0.0.1</domain>
-                  <domain includeSubdomains="true">localhost</domain>
-              </domain-config>
-          </network-security-config>
-          EOF
+          # 2. بازنویسی فایل network_security_config.xml اصلی ترموکس
+          XML_FILE="$SRC/app/src/main/res/xml/network_security_config.xml"
+          if [ -f "$XML_FILE" ]; then
+            cat > "$XML_FILE" << 'EOF'
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">127.0.0.1</domain>
+        <domain includeSubdomains="true">localhost</domain>
+    </domain-config>
+</network-security-config>
+EOF
+          fi
 
-          # 3. ثبت Activity در Manifest و اتصال network_security_config
+          # 3. ثبت Activity در Manifest و اطمینان از اتصال به network_security_config
           MANIFEST="$SRC/app/src/main/AndroidManifest.xml"
-          sed -i 's/<application /<application android:usesCleartextTraffic="true" android:networkSecurityConfig="@xml\/network_security_config" /' "$MANIFEST"
+          sed -i 's/<application /<application android:usesCleartextTraffic="true" /' "$MANIFEST"
           sed -i 's/<\/application>/<activity android:name="com.andoco.app.webview.WebViewActivity" android:exported="true" android:theme="@android:style\/Theme.NoTitleBar.Fullscreen" \/>\n<\/application>/' "$MANIFEST"
 
           # 4. تزریق کد به TermuxActivity.java
