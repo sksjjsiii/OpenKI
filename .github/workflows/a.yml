@@ -56,20 +56,21 @@ jobs:
           PKG_PATH="$SRC/app/src/main/java/com/andoco/app/webview"
           mkdir -p "$PKG_PATH"
           
+          # 1. کپی فایل WebViewActivity.java
           cp "${{ github.workspace }}/source/WebViewActivity.java" "$PKG_PATH/WebViewActivity.java"
 
+          # 2. ثبت Activity در Manifest و تزریق usesCleartextTraffic
           MANIFEST="$SRC/app/src/main/AndroidManifest.xml"
+          # استفاده از sed برای جایگزینی دقیق تگ application
           sed -i 's/<application /<application android:usesCleartextTraffic="true" /' "$MANIFEST"
           sed -i 's/<\/application>/<activity android:name="com.andoco.app.webview.WebViewActivity" android:exported="true" android:theme="@android:style\/Theme.NoTitleBar.Fullscreen" \/>\n<\/application>/' "$MANIFEST"
 
+          # 3. تزریق کد به TermuxActivity.java
           ACTIVITY_FILE="$SRC/app/src/main/java/com/termux/app/TermuxActivity.java"
 
           sed -i 's/import android.os.Bundle;/import android.os.Bundle;\nimport com.andoco.app.webview.WebViewActivity;/' "$ACTIVITY_FILE"
-
           sed -i 's/private static final int CONTEXT_MENU_REPORT_ID = 9;/private static final int CONTEXT_MENU_REPORT_ID = 9;\n    private static final int CONTEXT_MENU_OPENCODE_WEB_ID = 12;/' "$ACTIVITY_FILE"
-
           sed -i 's/menu.add(Menu.NONE, CONTEXT_MENU_REPORT_ID, Menu.NONE, R.string.action_report_issue);/menu.add(Menu.NONE, CONTEXT_MENU_REPORT_ID, Menu.NONE, R.string.action_report_issue);\n        menu.add(Menu.NONE, CONTEXT_MENU_OPENCODE_WEB_ID, Menu.NONE, "OpenCode Web");/' "$ACTIVITY_FILE"
-
           sed -i 's/case CONTEXT_MENU_REPORT_ID:/case CONTEXT_MENU_OPENCODE_WEB_ID:\n                startActivity(new Intent(this, WebViewActivity.class));\n                return true;\n            case CONTEXT_MENU_REPORT_ID:/' "$ACTIVITY_FILE"
 
       - name: Rebuild APK with WebView
@@ -82,6 +83,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Andoco-Debug-APK
-          # تغییر مهم: استفاده از * به جای نام دقیق فایل
           path: 'termux-generator/termux-apps-main/termux-app/app/build/outputs/apk/debug/*.apk'
+          # 【تغییر مهم】ذخیره فایل به صورت جداگانه، نه داخل ZIP
+          archive: false
           if-no-files-found: error
